@@ -86,6 +86,102 @@ router.get('/', async (req, res) => {
   }
 });
 
+// @route   GET /api/videos/search
+// @desc    Search videos by title or description
+// @access  Private
+router.get('/search', async (req, res) => {
+  try {
+    const { q, page = 1, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query is required'
+      });
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const searchQuery = q.trim();
+
+    // Get blocked user relationships
+    const Block = require('../models/Block');
+    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+
+    // Get current user with following list
+    const currentUser = await User.findById(req.user._id).select('following');
+    const followingIds = currentUser.following || [];
+
+    // Search videos by title or description (case-insensitive)
+    // Only search videos from users the current user follows
+    const searchRegex = new RegExp(searchQuery, 'i');
+    const videos = await Video.find({
+      $or: [
+        { title: searchRegex },
+        { description: searchRegex }
+      ],
+      author: { 
+        $in: followingIds,
+        $nin: blockedUserIds
+      },
+      isDeleted: false
+    })
+      .populate('author', 'name email avatar')
+      .populate('taggedUsers', 'name email avatar')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    // Get total count for pagination
+    const total = await Video.countDocuments({
+      $or: [
+        { title: searchRegex },
+        { description: searchRegex }
+      ],
+      author: { 
+        $in: followingIds,
+        $nin: blockedUserIds
+      },
+      isDeleted: false
+    });
+
+    // Format videos with metadata
+    const formattedVideos = videos.map(video => ({
+      ...video,
+      isLiked: video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false,
+      isViewed: video.views?.some(view => view.user.toString() === req.user._id.toString()) || false,
+      likeCount: video.likes?.length || 0,
+      viewCount: video.views?.length || 0,
+      commentCount: video.comments?.length || 0,
+      likes: undefined,
+      views: undefined,
+      comments: undefined
+    }));
+
+    console.log(`🔍 Search for "${searchQuery}" found ${videos.length} videos`);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        videos: formattedVideos,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        },
+        query: searchQuery
+      }
+    });
+  } catch (error) {
+    console.error('Search videos error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search videos'
+    });
+  }
+});
+
 // @route   GET /api/videos/user/:userId
 // @desc    Get videos by specific user
 // @access  Private
@@ -281,9 +377,22 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
 
         // Emit notification to tagged user
         if (io) {
-          io.to(userId.toString()).emit('notification:new', {
+          io.to(`user:${userId}`).emit('notification:new', {
             notification: notification.toJSON()
           });
+          
+          // Get updated unread count
+          const unreadCount = await Notification.countDocuments({
+            recipient: userId,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(`user:${userId}`).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`🔔 Video tag notification sent to user:${userId}, unread count: ${unreadCount}`);
         }
       });
 
@@ -404,9 +513,23 @@ router.post('/:id/like', async (req, res) => {
         // Emit notification via socket
         const io = req.app.get('io');
         if (io) {
-          io.to(video.author._id.toString()).emit('notification:new', {
+          io.to(`user:${video.author._id}`).emit('notification:new', {
             notification: notification.toJSON()
           });
+          
+          // Get updated unread count for the video author
+          const Notification = require('../models/Notification');
+          const unreadCount = await Notification.countDocuments({
+            recipient: video.author._id,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(`user:${video.author._id}`).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`🔔 Video like notification sent to user:${video.author._id}, unread count: ${unreadCount}`);
         }
       }
     }
@@ -502,9 +625,23 @@ router.post('/:id/comment', commentValidation, async (req, res) => {
       // Emit notification via socket
       const io = req.app.get('io');
       if (io) {
-        io.to(video.author._id.toString()).emit('notification:new', {
+        io.to(`user:${video.author._id}`).emit('notification:new', {
           notification: notification.toJSON()
         });
+        
+        // Get updated unread count for the video author
+        const Notification = require('../models/Notification');
+        const unreadCount = await Notification.countDocuments({
+          recipient: video.author._id,
+          isRead: false
+        });
+        
+        // Emit unread count update
+        io.to(`user:${video.author._id}`).emit('notification:unread-count', {
+          unreadCount
+        });
+        
+        console.log(`🔔 Video comment notification sent to user:${video.author._id}, unread count: ${unreadCount}`);
       }
     }
 

@@ -393,10 +393,20 @@ router.post(
       conversation.lastMessage = message._id;
       conversation.lastMessageAt = message.createdAt;
       
+      // Remove both sender and recipient from deletedBy array (un-delete conversation)
+      // This ensures the conversation reappears for users who previously deleted it
       if (isGroupMessage) {
+        // For groups, only remove the sender from deletedBy
+        conversation.deletedBy = conversation.deletedBy.filter(
+          id => id.toString() !== req.user._id.toString()
+        );
         // Increment unread for all participants except sender
         await conversation.incrementUnreadForAll(req.user._id);
       } else {
+        // For 1-on-1 chats, remove both users from deletedBy
+        conversation.deletedBy = conversation.deletedBy.filter(
+          id => id.toString() !== req.user._id.toString() && id.toString() !== recipient.toString()
+        );
         // Increment unread for recipient only
         await conversation.incrementUnread(recipient);
       }
@@ -440,30 +450,39 @@ router.post(
         ? `Sent a ${messageData.type}` 
         : (content ? content.substring(0, 100) : '');
       
+      console.log(`🔔 ===== CREATING NOTIFICATION =====`);
+      console.log(`🔔 Is Group Message: ${isGroupMessage}`);
+      console.log(`🔔 Notification Message: ${notificationMessage}`);
+      
       if (isGroupMessage) {
         // Create notification for all group members except sender
         const notificationPromises = conversation.participants
           .filter(participantId => participantId.toString() !== req.user._id.toString())
-          .map(participantId => 
-            Notification.create({
+          .map(participantId => {
+            console.log(`🔔 Creating notification for group participant: ${participantId}`);
+            return Notification.create({
               recipient: participantId,
               sender: req.user._id,
               type: 'message',
               message: `${req.user.name} in ${conversation.groupName}: ${notificationMessage}`,
               conversation: conversation._id
-            })
-          );
+            });
+          });
         await Promise.all(notificationPromises);
+        console.log(`🔔 Created ${notificationPromises.length} notifications for group members`);
       } else {
         // Create notification for single recipient
-        await Notification.create({
+        console.log(`🔔 Creating notification for recipient: ${recipient}`);
+        const notification = await Notification.create({
           recipient,
           sender: req.user._id,
           type: 'message',
           message: notificationMessage,
           conversation: conversation._id
         });
+        console.log(`🔔 Notification created successfully with ID: ${notification._id}`);
       }
+      console.log(`🔔 ===== NOTIFICATION CREATED =====`);
 
       // Emit Socket.IO events
       const io = req.app.get('io');
@@ -504,8 +523,10 @@ router.post(
 
         if (isGroupMessage) {
           // Send to all group participants
+          console.log(`💬 =====================================`);
           console.log(`💬 Sending group message to ${conversation.participants.length} participants`);
           conversation.participants.forEach(participantId => {
+            console.log(`💬 Emitting message:new to user:${participantId}`);
             io.to(`user:${participantId}`).emit('message:new', {
               message: socketMessageData
             });
@@ -513,6 +534,7 @@ router.post(
             // Send unread count update to all except sender
             if (participantId.toString() !== req.user._id.toString()) {
               const participantUnreadCount = conversation.getUnreadCount(participantId);
+              console.log(`💬 Emitting unread count ${participantUnreadCount} to user:${participantId}`);
               io.to(`user:${participantId}`).emit('message:unread-count', {
                 conversationId: conversation._id.toString(),
                 unreadCount: participantUnreadCount,
@@ -520,6 +542,8 @@ router.post(
               });
 
               // Send notification
+              // Note: Message count increment is handled by 'message:unread-count' event above
+              console.log(`💬 Emitting notification:new to user:${participantId}`);
               io.to(`user:${participantId}`).emit('notification:new', {
                 notification: {
                   _id: message._id,
@@ -533,29 +557,53 @@ router.post(
                   conversation: conversation._id,
                   read: false,
                   createdAt: message.createdAt
-                },
-                incrementMessageCount: true
+                }
               });
             }
           });
+          console.log(`💬 =====================================`);
         } else {
           // Send to 1-on-1 recipient and sender
-          console.log(`💬 Sending message to recipient room: user:${recipient}`);
+          console.log(`💬 =====================================`);
+          console.log(`💬 1-ON-1 MESSAGE BEING SENT`);
+          console.log(`💬 From: ${req.user._id} (${req.user.name})`);
+          console.log(`💬 To: ${recipient}`);
+          console.log(`💬 Conversation: ${conversation._id}`);
+          console.log(`💬 Message ID: ${message._id}`);
+          
+          // Check if recipient is connected via socket
+          const userSockets = req.app.get('userSockets');
+          const recipientSockets = userSockets?.get(recipient);
+          console.log(`💬 Recipient socket connections:`, recipientSockets ? Array.from(recipientSockets) : 'NOT CONNECTED');
+          
+          // Check what rooms the recipient sockets are in
+          if (recipientSockets && recipientSockets.size > 0) {
+            recipientSockets.forEach(socketId => {
+              const socket = io.sockets.sockets.get(socketId);
+              if (socket) {
+                const rooms = Array.from(socket.rooms);
+                console.log(`💬 Socket ${socketId} is in rooms:`, rooms);
+              }
+            });
+          }
+          
+          console.log(`💬 Emitting message:new to recipient room: user:${recipient}`);
           io.to(`user:${recipient}`).emit('message:new', {
             message: socketMessageData
           });
 
           // ALSO send to sender's room so they see it in real-time
-          console.log(`💬 Sending message to sender room: user:${req.user._id}`);
+          console.log(`💬 Emitting message:new to sender room: user:${req.user._id}`);
           io.to(`user:${req.user._id}`).emit('message:new', {
             message: socketMessageData
           });
 
           // Get updated unread count for recipient
           const recipientUnreadCount = conversation.getUnreadCount(recipient);
-          console.log(`💬 Recipient unread count: ${recipientUnreadCount}`);
+          console.log(`💬 Recipient unread count after increment: ${recipientUnreadCount}`);
 
           // Send unread count update to recipient
+          console.log(`💬 Emitting message:unread-count to recipient: user:${recipient}`);
           io.to(`user:${recipient}`).emit('message:unread-count', {
             conversationId: conversation._id.toString(),
             unreadCount: recipientUnreadCount,
@@ -563,6 +611,24 @@ router.post(
           });
 
           // Send notification to recipient only (not sender)
+          // Note: Message count increment is handled by 'message:unread-count' event above
+          console.log(`💬 ===== EMITTING NOTIFICATION =====`);
+          console.log(`💬 Event: notification:new`);
+          console.log(`💬 Target room: user:${recipient}`);
+          console.log(`💬 Notification data:`, {
+            _id: message._id,
+            type: 'message',
+            sender: {
+              _id: req.user._id,
+              name: req.user.name,
+              avatar: req.user.avatar
+            },
+            message: notificationMessage,
+            conversation: conversation._id,
+            read: false,
+            createdAt: message.createdAt
+          });
+          
           io.to(`user:${recipient}`).emit('notification:new', {
             notification: {
               _id: message._id,
@@ -576,9 +642,10 @@ router.post(
               conversation: conversation._id,
               read: false,
               createdAt: message.createdAt
-            },
-            incrementMessageCount: true
+            }
           });
+          console.log(`💬 ===== NOTIFICATION EMITTED =====`);
+          console.log(`💬 =====================================`);
         }
 
         console.log(`✅ Message sent successfully with notifications and unread count updated`);
@@ -886,6 +953,61 @@ router.delete('/:messageId', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete message'
+    });
+  }
+});
+
+// @route   DELETE /api/messages/conversation/:conversationId/clear
+// @desc    Clear all messages in a conversation for current user (soft delete)
+// @access  Private
+router.delete('/conversation/:conversationId/clear', auth, async (req, res) => {
+  try {
+    const conversation = await Conversation.findById(req.params.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    // Verify user is a participant
+    if (!conversation.participants.some(p => p.toString() === req.user._id.toString())) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not a participant of this conversation'
+      });
+    }
+
+    // Find all messages in this conversation
+    const messages = await Message.find({
+      conversation: req.params.conversationId
+    });
+
+    // Add current user to deletedBy array for each message (if not already there)
+    let clearedCount = 0;
+    for (const message of messages) {
+      if (!message.deletedBy.includes(req.user._id)) {
+        message.deletedBy.push(req.user._id);
+        await message.save();
+        clearedCount++;
+      }
+    }
+
+    console.log(`🗑️ Cleared ${clearedCount} messages for user ${req.user._id} in conversation ${conversation._id}`);
+
+    res.json({
+      success: true,
+      message: `Cleared ${clearedCount} messages`,
+      data: {
+        clearedCount
+      }
+    });
+  } catch (error) {
+    console.error('Clear messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear messages'
     });
   }
 });
@@ -1592,6 +1714,228 @@ router.delete('/groups/:conversationId/admins/:participantId', auth, async (req,
     res.status(500).json({
       success: false,
       message: 'Failed to remove admin'
+    });
+  }
+});
+
+// @route   GET /api/messages/:conversationId/search
+// @desc    Search messages within a conversation
+// @access  Private
+router.get('/:conversationId/search', auth, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { query, page = 1, limit = 20 } = req.query;
+
+    if (!query || query.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query is required'
+      });
+    }
+
+    // Verify conversation exists and user is a participant
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    if (!conversation.participants.includes(req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to access this conversation'
+      });
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Search messages using text index (case-insensitive)
+    const searchResults = await Message.find({
+      conversation: conversationId,
+      deletedBy: { $ne: req.user._id },
+      isDeleted: false,
+      $text: { $search: query }
+    })
+      .populate('sender', 'name email avatar')
+      .populate('replyTo', 'content sender')
+      .sort({ score: { $meta: 'textScore' }, createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    // Get total count for pagination
+    const totalResults = await Message.countDocuments({
+      conversation: conversationId,
+      deletedBy: { $ne: req.user._id },
+      isDeleted: false,
+      $text: { $search: query }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        results: searchResults,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: totalResults,
+          totalPages: Math.ceil(totalResults / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Search messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search messages'
+    });
+  }
+});
+
+// @route   GET /api/messages/:conversationId/export
+// @desc    Export conversation history
+// @access  Private
+router.get('/:conversationId/export', auth, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { format = 'json' } = req.query; // json or txt
+
+    // Verify conversation exists and user is a participant
+    const conversation = await Conversation.findById(conversationId)
+      .populate('participants', 'name email avatar');
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    if (!conversation.participants.some(p => p._id.toString() === req.user._id.toString())) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to access this conversation'
+      });
+    }
+
+    // Get all messages in the conversation (not deleted by user)
+    const messages = await Message.find({
+      conversation: conversationId,
+      deletedBy: { $ne: req.user._id },
+      isDeleted: false
+    })
+      .populate('sender', 'name email avatar')
+      .populate('replyTo', 'content sender')
+      .sort({ createdAt: 1 }); // Chronological order
+
+    // Get other participant info for file naming
+    const otherParticipant = conversation.isGroup 
+      ? { name: conversation.groupName || 'Group Chat' }
+      : conversation.participants.find(p => p._id.toString() !== req.user._id.toString());
+
+    const fileName = `FreeTalk_${otherParticipant.name.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}`;
+
+    if (format === 'txt') {
+      // Generate plain text format
+      let textContent = `FreeTalk Conversation Export\n`;
+      textContent += `===============================\n\n`;
+      textContent += `Chat with: ${otherParticipant.name}\n`;
+      textContent += `Exported on: ${new Date().toLocaleString()}\n`;
+      textContent += `Total messages: ${messages.length}\n`;
+      textContent += `\n===============================\n\n`;
+
+      messages.forEach(msg => {
+        const timestamp = new Date(msg.createdAt).toLocaleString();
+        const senderName = msg.sender.name || 'Unknown';
+        
+        textContent += `[${timestamp}] ${senderName}:\n`;
+        
+        if (msg.replyTo) {
+          const replyToSender = msg.replyTo.sender?.name || 'Unknown';
+          textContent += `  ↳ Replying to ${replyToSender}: "${msg.replyTo.content || '[Media]'}"\n`;
+        }
+        
+        if (msg.content) {
+          textContent += `  ${msg.content}\n`;
+        }
+        
+        if (msg.type === 'image') {
+          textContent += `  📷 [Image: ${msg.mediaUrl}]\n`;
+        } else if (msg.type === 'video') {
+          textContent += `  🎥 [Video: ${msg.mediaUrl}]\n`;
+        } else if (msg.type === 'document') {
+          textContent += `  📄 [Document: ${msg.fileName || msg.mediaUrl}]\n`;
+        } else if (msg.type === 'gif') {
+          textContent += `  🎬 [GIF: ${msg.mediaUrl}]\n`;
+        }
+        
+        if (msg.reactions && msg.reactions.length > 0) {
+          const reactionSummary = msg.reactions.map(r => `${r.emoji}(${r.user.name})`).join(', ');
+          textContent += `  Reactions: ${reactionSummary}\n`;
+        }
+        
+        textContent += `\n`;
+      });
+
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}.txt"`);
+      res.send(textContent);
+    } else {
+      // Generate JSON format
+      const exportData = {
+        exportInfo: {
+          exportedBy: req.user.name,
+          exportedAt: new Date().toISOString(),
+          conversationId: conversationId,
+          totalMessages: messages.length
+        },
+        conversation: {
+          isGroup: conversation.isGroup,
+          name: conversation.isGroup ? conversation.groupName : otherParticipant.name,
+          participants: conversation.participants.map(p => ({
+            id: p._id,
+            name: p.name,
+            email: p.email
+          }))
+        },
+        messages: messages.map(msg => ({
+          id: msg._id,
+          sender: {
+            id: msg.sender._id,
+            name: msg.sender.name,
+            email: msg.sender.email
+          },
+          content: msg.content,
+          type: msg.type,
+          mediaUrl: msg.mediaUrl,
+          fileName: msg.fileName,
+          fileSize: msg.fileSize,
+          replyTo: msg.replyTo ? {
+            id: msg.replyTo._id,
+            content: msg.replyTo.content,
+            sender: msg.replyTo.sender?.name
+          } : null,
+          reactions: msg.reactions,
+          isRead: msg.isRead,
+          createdAt: msg.createdAt,
+          updatedAt: msg.updatedAt
+        }))
+      };
+
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}.json"`);
+      res.json({
+        success: true,
+        data: exportData
+      });
+    }
+  } catch (error) {
+    console.error('Export conversation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export conversation'
     });
   }
 });

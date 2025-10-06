@@ -109,7 +109,8 @@ app.use('/uploads', express.static('uploads'));
 connectDB();
 
 // Socket.IO connection handling
-const userSockets = new Map(); // Map to store userId -> socketId
+// Map to store userId -> Set of socketIds (to support multiple connections per user)
+const userSockets = new Map();
 const activeCalls = new Map(); // Map to store active calls: callId -> {callerId, calleeId, callType}
 
 io.on('connection', (socket) => {
@@ -119,10 +120,17 @@ io.on('connection', (socket) => {
   socket.on('authenticate', async (userId) => {
     console.log(`👤 ==========================================`);
     console.log(`👤 User ${userId} authenticated with socket ${socket.id}`);
-    userSockets.set(userId, socket.id);
+    
+    // Support multiple connections per user (different devices/tabs)
+    if (!userSockets.has(userId)) {
+      userSockets.set(userId, new Set());
+    }
+    userSockets.get(userId).add(socket.id);
+    
     socket.userId = userId;
     socket.join(`user:${userId}`);
     console.log(`👤 ✅ User ${userId} joined room: user:${userId}`);
+    console.log(`👤 Total connections for user ${userId}: ${userSockets.get(userId).size}`);
     
     // Verify room membership
     const rooms = Array.from(socket.rooms);
@@ -341,45 +349,57 @@ io.on('connection', (socket) => {
     console.log('🔌 Client disconnected:', socket.id);
     if (socket.userId) {
       const userId = socket.userId;
-      userSockets.delete(userId);
       
-      // End any active calls for this user
-      for (const [callId, call] of activeCalls.entries()) {
-        if (call.callerId === userId || call.calleeId === userId) {
-          const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
-          io.to(`user:${otherUserId}`).emit('call:ended', { callId, reason: 'User disconnected' });
-          activeCalls.delete(callId);
+      // Remove this specific socket from the user's socket set
+      if (userSockets.has(userId)) {
+        userSockets.get(userId).delete(socket.id);
+        console.log(`👤 Removed socket ${socket.id} from user ${userId}`);
+        console.log(`👤 Remaining connections for user ${userId}: ${userSockets.get(userId).size}`);
+        
+        // Only delete the user entry if no more connections
+        if (userSockets.get(userId).size === 0) {
+          userSockets.delete(userId);
+          console.log(`👤 No more connections for user ${userId}, removing from map`);
           
-          // Update call in database
-          try {
-            const Call = require('./models/Call');
-            const callDoc = await Call.findOne({ callId });
-            if (callDoc && callDoc.status !== 'ended') {
-              await callDoc.markAsEnded();
+          // End any active calls for this user
+          for (const [callId, call] of activeCalls.entries()) {
+            if (call.callerId === userId || call.calleeId === userId) {
+              const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+              io.to(`user:${otherUserId}`).emit('call:ended', { callId, reason: 'User disconnected' });
+              activeCalls.delete(callId);
+              
+              // Update call in database
+              try {
+                const Call = require('./models/Call');
+                const callDoc = await Call.findOne({ callId });
+                if (callDoc && callDoc.status !== 'ended') {
+                  await callDoc.markAsEnded();
+                }
+              } catch (error) {
+                console.error('❌ Error ending call on disconnect:', error);
+              }
             }
+          }
+          
+          // Update user offline status only when ALL connections are closed
+          try {
+            const User = require('./models/User');
+            await User.findByIdAndUpdate(userId, {
+              isOnline: false,
+              lastActive: new Date()
+            });
+            console.log(`✅ User ${userId} set to offline`);
+            
+            // Emit user status change to all connected clients
+            io.emit('user:status-changed', {
+              userId,
+              isOnline: false,
+              lastActive: new Date()
+            });
           } catch (error) {
-            console.error('❌ Error ending call on disconnect:', error);
+            console.error('❌ Error updating user offline status:', error);
           }
         }
-      }
-      
-      // Update user offline status
-      try {
-        const User = require('./models/User');
-        await User.findByIdAndUpdate(userId, {
-          isOnline: false,
-          lastActive: new Date()
-        });
-        console.log(`✅ User ${userId} set to offline`);
-        
-        // Emit user status change to all connected clients
-        io.emit('user:status-changed', {
-          userId,
-          isOnline: false,
-          lastActive: new Date()
-        });
-      } catch (error) {
-        console.error('❌ Error updating user offline status:', error);
       }
     }
   });

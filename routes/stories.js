@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Story = require('../models/Story');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
@@ -234,6 +235,96 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+// @route   GET /api/stories/search
+// @desc    Search stories by caption or text content
+// @access  Private
+router.get('/search', authenticateToken, async (req, res) => {
+  try {
+    const { q, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query is required'
+      });
+    }
+
+    const searchQuery = q.trim();
+
+    // Get blocked user relationships
+    const Block = require('../models/Block');
+    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+
+    // Get current user with following list
+    const currentUser = await User.findById(req.user._id).select('following');
+    const followingIds = currentUser.following || [];
+
+    // Search stories by caption or text content (case-insensitive)
+    // Only search stories from users the current user follows
+    const searchRegex = new RegExp(searchQuery, 'i');
+    const stories = await Story.find({
+      $or: [
+        { caption: searchRegex },
+        { textContent: searchRegex }
+      ],
+      author: { 
+        $in: followingIds,
+        $nin: blockedUserIds
+      },
+      expiresAt: { $gt: new Date() }
+    })
+      .populate('author', 'name email avatar')
+      .populate({
+        path: 'reactions.user',
+        select: 'name avatar',
+        options: { strictPopulate: false }
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    // Format stories with metadata
+    const formattedStories = stories.map(story => {
+      const hasViewed = story.viewers && story.viewers.some(
+        viewer => viewer.user && viewer.user.toString() === req.user._id.toString()
+      );
+      
+      const hasReacted = story.reactions && story.reactions.some(
+        reaction => reaction.user && reaction.user._id && reaction.user._id.toString() === req.user._id.toString()
+      );
+      
+      const userReaction = story.reactions && story.reactions.find(
+        r => r.user && r.user._id && r.user._id.toString() === req.user._id.toString()
+      );
+      
+      return {
+        ...story,
+        hasViewed,
+        hasReacted,
+        viewersCount: story.viewers ? story.viewers.length : 0,
+        reactionsCount: story.reactions ? story.reactions.length : 0,
+        userReaction: userReaction ? userReaction.emoji : null
+      };
+    });
+
+    console.log(`🔍 Search for "${searchQuery}" found ${stories.length} stories`);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        stories: formattedStories,
+        query: searchQuery
+      }
+    });
+  } catch (error) {
+    console.error('Search stories error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search stories'
+    });
+  }
+});
+
 // @route   GET /api/stories/user/:userId
 // @desc    Get stories by specific user
 // @access  Private
@@ -297,6 +388,14 @@ router.get('/user/:userId', authenticateToken, async (req, res) => {
 // @access  Private
 router.get('/:storyId', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     const story = await Story.findById(req.params.storyId)
       .populate('author', 'name email avatar')
       .populate('viewers.user', 'name avatar')
@@ -351,6 +450,14 @@ router.get('/:storyId', authenticateToken, async (req, res) => {
 // @access  Private
 router.post('/:storyId/view', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     const story = await Story.findById(req.params.storyId)
       .populate('author', 'name email avatar');
 
@@ -410,6 +517,14 @@ router.post('/:storyId/view', authenticateToken, async (req, res) => {
 // @access  Private
 router.post('/:storyId/react', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     const { emoji } = req.body;
     
     if (!emoji || typeof emoji !== 'string' || emoji.trim() === '') {
@@ -486,7 +601,18 @@ router.post('/:storyId/react', authenticateToken, async (req, res) => {
         notification: notification.toJSON()
       });
       
-      console.log(`❤️ User ${req.user._id} reacted ${emoji} to story ${story._id}`);
+      // Get updated unread count
+      const unreadCount = await Notification.countDocuments({
+        recipient: story.author._id,
+        isRead: false
+      });
+      
+      // Emit unread count update
+      io.to(`user:${story.author._id}`).emit('notification:unread-count', {
+        unreadCount
+      });
+      
+      console.log(`❤️ User ${req.user._id} reacted ${emoji} to story ${story._id}, unread count: ${unreadCount}`);
     }
 
     res.status(200).json({
@@ -512,6 +638,14 @@ router.post('/:storyId/react', authenticateToken, async (req, res) => {
 // @access  Private
 router.delete('/:storyId/react', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     const story = await Story.findById(req.params.storyId)
       .populate('author', 'name email avatar');
 
@@ -568,6 +702,14 @@ router.delete('/:storyId/react', authenticateToken, async (req, res) => {
 // @access  Private
 router.delete('/:storyId', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     const story = await Story.findById(req.params.storyId);
 
     if (!story) {
@@ -647,6 +789,14 @@ router.delete('/cleanup/expired', async (req, res) => {
 // @access  Private (only story author)
 router.get('/:storyId/viewers', authenticateToken, async (req, res) => {
   try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(req.params.storyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid story ID format'
+      });
+    }
+
     console.log(`📊 Getting viewers for story ${req.params.storyId} by user ${req.user._id}`);
     
     const story = await Story.findById(req.params.storyId)

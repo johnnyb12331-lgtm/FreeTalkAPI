@@ -144,7 +144,19 @@ router.post('/', async (req, res) => {
         }
       });
       
-      console.log('🤚 ✅ Socket events emitted successfully');
+      // Get updated unread count
+      const Notification = require('../models/Notification');
+      const unreadCount = await Notification.countDocuments({
+        recipient: recipientId,
+        isRead: false
+      });
+      
+      // Emit unread count update
+      io.to(`user:${recipientId}`).emit('notification:unread-count', {
+        unreadCount
+      });
+      
+      console.log(`🤚 ✅ Socket events emitted successfully with unread count: ${unreadCount}`);
     } else {
       console.log('🤚 ⚠️ No Socket.IO instance - notification will not be sent in real-time');
     }

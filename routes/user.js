@@ -999,6 +999,17 @@ router.post('/:userId/follow', authenticateToken, async (req, res) => {
         notification: notification.toJSON()
       });
       
+      // Get updated unread count for the followed user
+      const unreadCount = await Notification.countDocuments({
+        recipient: req.params.userId,
+        isRead: false
+      });
+      
+      // Emit unread count update
+      io.to(`user:${req.params.userId}`).emit('notification:unread-count', {
+        unreadCount
+      });
+      
       // Emit follow event to the user being followed
       io.to(`user:${req.params.userId}`).emit('user:followed', followedUserData);
       
@@ -1006,7 +1017,7 @@ router.post('/:userId/follow', authenticateToken, async (req, res) => {
       io.to(`user:${req.user._id}`).emit('user:followed', followerData);
       
       console.log(`👥 Follow notification and events sent to both users`);
-      console.log(`   - Followed user: ${req.params.userId}`);
+      console.log(`   - Followed user: ${req.params.userId}, unread count: ${unreadCount}`);
       console.log(`   - Follower: ${req.user._id}`);
     }
 

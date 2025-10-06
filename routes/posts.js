@@ -989,7 +989,18 @@ router.post('/:id/share', async (req, res) => {
             ...notificationData
           });
           
-          console.log(`🔔 Notification sent to original author: ${post.author._id}`);
+          // Get updated unread count for the post author
+          const unreadCount = await Notification.countDocuments({
+            recipient: post.author._id,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(`user:${post.author._id}`).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`🔔 Post reshare notification sent to user:${post.author._id}, unread count: ${unreadCount}`);
           console.log(`   Type: post_share`);
           console.log(`   Sender: ${currentUser.name}`);
           console.log(`   Socket room: user:${post.author._id}`);
@@ -1148,6 +1159,101 @@ router.post('/:id/share', async (req, res) => {
       success: false,
       message: 'Failed to share post',
       error: error.message
+    });
+  }
+});
+
+// @route   GET /api/posts/saved/search
+// @desc    Search user's saved posts by content
+// @access  Private
+router.get('/saved/search', async (req, res) => {
+  try {
+    const { q, page = 1, limit = 20 } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query is required'
+      });
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const searchQuery = q.trim();
+
+    // Get user with saved posts
+    const User = require('../models/User');
+    const user = await User.findById(req.user._id).select('savedPosts');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Search within user's saved posts by content (case-insensitive)
+    const searchRegex = new RegExp(searchQuery, 'i');
+    const posts = await Post.find({
+      _id: { $in: user.savedPosts },
+      content: searchRegex,
+      visibility: 'public'
+    })
+      .select('content author images videos reactions comments createdAt isReshare originalPost reshareCaption mediaType')
+      .populate('author', 'name email avatar')
+      .populate({
+        path: 'originalPost',
+        select: 'content author images videos mediaType reactions comments createdAt',
+        populate: {
+          path: 'author',
+          select: 'name email avatar'
+        }
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    // Get total count for pagination
+    const total = await Post.countDocuments({
+      _id: { $in: user.savedPosts },
+      content: searchRegex,
+      visibility: 'public'
+    });
+
+    // Format posts
+    const formattedPosts = posts.map(post => {
+      const commentsArray = post.comments || [];
+      const reactionsArray = post.reactions || [];
+      
+      return {
+        ...post,
+        likesCount: reactionsArray.length,
+        reactionsCount: reactionsArray.length,
+        commentsCount: commentsArray.length,
+        comments: undefined
+      };
+    });
+
+    console.log(`🔍 Search for "${searchQuery}" found ${posts.length} saved posts`);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        posts: formattedPosts,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        },
+        query: searchQuery
+      }
+    });
+  } catch (error) {
+    console.error('Search saved posts error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search saved posts'
     });
   }
 });
@@ -1337,6 +1443,19 @@ router.post('/:id/react', [
           io.to(`user:${post.author._id}`).emit('notification:new', {
             notification: notification.toObject()
           });
+          
+          // Get updated unread count for the post author
+          const unreadCount = await Notification.countDocuments({
+            recipient: post.author._id,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(`user:${post.author._id}`).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`🔔 Post reaction notification sent to user:${post.author._id}, unread count: ${unreadCount}`);
         }
       }
     }
@@ -1413,6 +1532,47 @@ router.delete('/:id/react', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to remove reaction'
+    });
+  }
+});
+
+// @route   GET /api/posts/:id/reactions
+// @desc    Get all reactions for a post
+// @access  Private
+router.get('/:id/reactions', async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id)
+      .populate('reactions.user', 'name email avatar')
+      .lean();
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found'
+      });
+    }
+
+    // Format reactions with user info
+    const reactions = (post.reactions || []).map(reaction => ({
+      _id: reaction._id,
+      type: reaction.type,
+      user: reaction.user,
+      createdAt: reaction.createdAt
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        reactions,
+        reactionsSummary: post.reactionsSummary,
+        totalReactions: post.reactionsCount
+      }
+    });
+  } catch (error) {
+    console.error('Get reactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get reactions'
     });
   }
 });
@@ -1585,7 +1745,19 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
           io.to(roomName).emit('notification:new', {
             notification: notification.toObject()
           });
-          console.log(`✅ Notification emitted successfully`);
+          
+          // Get updated unread count for the post author
+          const unreadCount = await Notification.countDocuments({
+            recipient: post.author._id,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(roomName).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`✅ Comment notification emitted successfully with unread count: ${unreadCount}`);
         } else {
           console.log(`❌ Socket.IO instance not found`);
         }
@@ -1621,7 +1793,19 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
             io.to(`user:${mentionedUserId}`).emit('notification:new', {
               notification: mentionNotification.toObject()
             });
-            console.log(`✅ Mention notification sent to user ${mentionedUserId}`);
+            
+            // Get updated unread count
+            const unreadCount = await Notification.countDocuments({
+              recipient: mentionedUserId,
+              isRead: false
+            });
+            
+            // Emit unread count update
+            io.to(`user:${mentionedUserId}`).emit('notification:unread-count', {
+              unreadCount
+            });
+            
+            console.log(`✅ Mention notification sent to user ${mentionedUserId}, unread count: ${unreadCount}`);
           }
         }
       }
@@ -1782,7 +1966,18 @@ router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res
             }
           });
           
-          console.log('✅ Notification emitted to room:', roomName);
+          // Get updated unread count
+          const unreadCount = await Notification.countDocuments({
+            recipient: commentUserId,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(roomName).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`✅ Reply notification emitted to room: ${roomName}, unread count: ${unreadCount}`);
         }
       } catch (notificationError) {
         console.error('Failed to create reply notification:', notificationError);
@@ -1817,7 +2012,19 @@ router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res
               io.to(`user:${mentionedUserId}`).emit('notification:new', {
                 notification: mentionNotification.toObject()
               });
-              console.log(`✅ Mention notification sent to user ${mentionedUserId}`);
+              
+              // Get updated unread count
+              const unreadCount = await Notification.countDocuments({
+                recipient: mentionedUserId,
+                isRead: false
+              });
+              
+              // Emit unread count update
+              io.to(`user:${mentionedUserId}`).emit('notification:unread-count', {
+                unreadCount
+              });
+              
+              console.log(`✅ Reply mention notification sent to user ${mentionedUserId}, unread count: ${unreadCount}`);
             }
           } catch (notificationError) {
             console.error('Failed to create mention notification in reply:', notificationError);
@@ -1930,6 +2137,19 @@ router.post('/:id/comments/:commentId/react', async (req, res) => {
         io.to(roomName).emit('notification:new', {
           notification: notification.toObject()
         });
+        
+        // Get updated unread count
+        const unreadCount = await Notification.countDocuments({
+          recipient: commentAuthorId,
+          isRead: false
+        });
+        
+        // Emit unread count update
+        io.to(roomName).emit('notification:unread-count', {
+          unreadCount
+        });
+        
+        console.log(`✅ Comment reaction notification sent, unread count: ${unreadCount}`);
         
         // Also emit comment reaction event for UI updates
         io.emit('comment:reacted', {
@@ -2311,7 +2531,18 @@ router.post('/:id/comments/:commentId/replies/:replyId/reply', commentValidation
             }
           });
           
-          console.log('✅ Nested reply notification emitted to room:', roomName);
+          // Get updated unread count
+          const unreadCount = await Notification.countDocuments({
+            recipient: replyUserId,
+            isRead: false
+          });
+          
+          // Emit unread count update
+          io.to(roomName).emit('notification:unread-count', {
+            unreadCount
+          });
+          
+          console.log(`✅ Nested reply notification emitted to room: ${roomName}, unread count: ${unreadCount}`);
         }
       } catch (notificationError) {
         console.error('Failed to create nested reply notification:', notificationError);
@@ -2346,7 +2577,19 @@ router.post('/:id/comments/:commentId/replies/:replyId/reply', commentValidation
               io.to(`user:${mentionedUserId}`).emit('notification:new', {
                 notification: mentionNotification.toObject()
               });
-              console.log(`✅ Mention notification sent to user ${mentionedUserId}`);
+              
+              // Get updated unread count
+              const unreadCount = await Notification.countDocuments({
+                recipient: mentionedUserId,
+                isRead: false
+              });
+              
+              // Emit unread count update
+              io.to(`user:${mentionedUserId}`).emit('notification:unread-count', {
+                unreadCount
+              });
+              
+              console.log(`✅ Nested reply mention notification sent to user ${mentionedUserId}, unread count: ${unreadCount}`);
             }
           } catch (notificationError) {
             console.error('Failed to create mention notification in nested reply:', notificationError);

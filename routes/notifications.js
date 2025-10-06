@@ -147,10 +147,24 @@ router.put('/:id/read', async (req, res) => {
 
     await notification.markAsRead();
 
+    // Get updated unread count
+    const unreadCount = await Notification.countDocuments({
+      recipient: req.user._id,
+      isRead: false
+    });
+
+    // Emit socket event for unread count update
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${req.user._id}`).emit('notification:unread-count', {
+        unreadCount
+      });
+    }
+
     res.status(200).json({
       success: true,
       message: 'Notification marked as read',
-      data: { notification }
+      data: { notification, unreadCount }
     });
   } catch (error) {
     console.error('Mark notification as read error:', error);
@@ -171,9 +185,18 @@ router.put('/read-all', async (req, res) => {
       { isRead: true }
     );
 
+    // Emit socket event for unread count update (should be 0 now)
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${req.user._id}`).emit('notification:unread-count', {
+        unreadCount: 0
+      });
+    }
+
     res.status(200).json({
       success: true,
-      message: 'All notifications marked as read'
+      message: 'All notifications marked as read',
+      data: { unreadCount: 0 }
     });
   } catch (error) {
     console.error('Mark all as read error:', error);
