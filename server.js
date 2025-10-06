@@ -51,8 +51,14 @@ const io = new Server(server, {
       // In development, allow all origins
       if (!isProduction) return callback(null, true);
       
-      // In production, check against allowed origins
-      if (allowedOrigins.includes(origin)) {
+      // In production, check against allowed origins OR localhost
+      const isLocalhost = origin && (
+        origin.startsWith('http://localhost:') || 
+        origin.startsWith('http://127.0.0.1:') ||
+        origin.startsWith('http://[::1]:')
+      );
+      
+      if (allowedOrigins.includes(origin) || isLocalhost) {
         callback(null, true);
       } else {
         console.warn(`⚠️  Blocked by CORS: ${origin}`);
@@ -77,8 +83,14 @@ app.use(cors({
     // In development, allow all origins
     if (!isProduction) return callback(null, true);
     
-    // In production, check against allowed origins
-    if (allowedOrigins.includes(origin)) {
+    // In production, check against allowed origins OR localhost
+    const isLocalhost = origin && (
+      origin.startsWith('http://localhost:') || 
+      origin.startsWith('http://127.0.0.1:') ||
+      origin.startsWith('http://[::1]:')
+    );
+    
+    if (allowedOrigins.includes(origin) || isLocalhost) {
       callback(null, true);
     } else {
       console.warn(`⚠️  Blocked by CORS: ${origin}`);
