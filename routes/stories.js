@@ -346,7 +346,7 @@ router.get('/user/:userId', authenticateToken, async (req, res) => {
       expiresAt: { $gt: new Date() }
     })
     .populate('author', 'name email avatar')
-    .populate('reactions.user', 'name avatar')
+    .populate('reactions.user', 'name avatar isPremium premiumFeatures')
     .sort({ createdAt: 1 }); // Oldest first for viewing
 
     const storiesData = stories.map(story => {
@@ -398,8 +398,8 @@ router.get('/:storyId', authenticateToken, async (req, res) => {
 
     const story = await Story.findById(req.params.storyId)
       .populate('author', 'name email avatar')
-      .populate('viewers.user', 'name avatar')
-      .populate('reactions.user', 'name avatar');
+      .populate('viewers.user', 'name avatar isPremium premiumFeatures')
+      .populate('reactions.user', 'name avatar isPremium premiumFeatures');
 
     if (!story) {
       return res.status(404).json({
@@ -565,7 +565,7 @@ router.post('/:storyId/react', authenticateToken, async (req, res) => {
     await story.save();
     
     // Populate the reactions for response
-    await story.populate('reactions.user', 'name avatar');
+    await story.populate('reactions.user', 'name avatar isPremium premiumFeatures');
 
     // Create notification for story author
     const notification = await Notification.create({
@@ -800,7 +800,7 @@ router.get('/:storyId/viewers', authenticateToken, async (req, res) => {
     console.log(`📊 Getting viewers for story ${req.params.storyId} by user ${req.user._id}`);
     
     const story = await Story.findById(req.params.storyId)
-      .populate('viewers.user', 'name email avatar')
+      .populate('viewers.user', 'name email avatar isPremium premiumFeatures')
       .populate('author', '_id');
 
     if (!story) {

@@ -126,7 +126,7 @@ router.get('/search', async (req, res) => {
       isDeleted: false
     })
       .populate('author', 'name email avatar')
-      .populate('taggedUsers', 'name email avatar')
+      .populate('taggedUsers', 'name email avatar isPremium premiumFeatures')
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
       .skip(skip)
@@ -247,8 +247,8 @@ router.get('/:id', async (req, res) => {
 
     const video = await Video.findById(req.params.id)
       .populate('author', 'name email avatar')
-      .populate('taggedUsers', 'name email avatar')
-      .populate('comments.user', 'name email avatar');
+      .populate('taggedUsers', 'name email avatar isPremium premiumFeatures')
+      .populate('comments.user', 'name email avatar isPremium premiumFeatures');
 
     if (!video || video.isDeleted) {
       return res.status(404).json({
@@ -342,7 +342,7 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
 
     // Populate author and tagged users
     await video.populate('author', 'name email avatar');
-    await video.populate('taggedUsers', 'name email avatar');
+    await video.populate('taggedUsers', 'name email avatar isPremium premiumFeatures');
 
     console.log(`📹 New video created: ${video._id} by ${req.user.name}`);
 
@@ -604,7 +604,7 @@ router.post('/:id/comment', commentValidation, async (req, res) => {
 
     // Get the newly added comment with populated user
     const populatedVideo = await Video.findById(video._id)
-      .populate('comments.user', 'name email avatar');
+      .populate('comments.user', 'name email avatar isPremium premiumFeatures');
     
     const newComment = populatedVideo.comments[populatedVideo.comments.length - 1];
 
@@ -678,7 +678,7 @@ router.post('/:id/comment', commentValidation, async (req, res) => {
 router.get('/:id/comments', async (req, res) => {
   try {
     const video = await Video.findById(req.params.id)
-      .populate('comments.user', 'name email avatar')
+      .populate('comments.user', 'name email avatar isPremium premiumFeatures')
       .select('comments');
 
     if (!video || video.isDeleted) {

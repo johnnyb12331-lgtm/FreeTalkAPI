@@ -77,7 +77,7 @@ router.get('/search', async (req, res) => {
       }
     })
       .select('content author images videos reactions comments createdAt isReshare originalPost reshareCaption mediaType')
-      .populate('author', 'name email avatar')
+      .populate('author', 'name email avatar isPremium premiumFeatures')
       .populate({
         path: 'originalPost',
         select: 'content author images videos mediaType reactions comments createdAt',
@@ -170,7 +170,7 @@ router.get('/', async (req, res) => {
       }
     })
       .select('content author images videos reactions comments createdAt isReshare originalPost reshareCaption mediaType taggedUsers') // Select needed fields including reshare fields
-      .populate('author', 'name email avatar')
+      .populate('author', 'name email avatar isPremium premiumFeatures')
       .populate('taggedUsers', 'name email avatar')
       .populate({
         path: 'originalPost',
@@ -297,7 +297,7 @@ router.get('/:id', async (req, res) => {
     }
 
     const post = await Post.findById(req.params.id)
-      .populate('author', 'name email avatar')
+      .populate('author', 'name email avatar isPremium premiumFeatures')
       .populate('taggedUsers', 'name email avatar')
       .populate({
         path: 'originalPost',
@@ -506,7 +506,7 @@ router.post('/', upload.array('media', 10), async (req, res) => {
     await post.save();
     
     // Populate author information and tagged users
-    await post.populate('author', 'name email avatar');
+    await post.populate('author', 'name email avatar isPremium premiumFeatures');
     await post.populate('taggedUsers', 'name email avatar');
 
     // Create notifications for tagged users
@@ -642,7 +642,7 @@ router.put('/:id', createPostValidation, async (req, res) => {
     if (visibility) post.visibility = visibility;
 
     await post.save();
-    await post.populate('author', 'name email avatar');
+    await post.populate('author', 'name email avatar isPremium premiumFeatures');
 
     // Emit socket event for real-time update
     const io = req.app.get('io');
@@ -770,7 +770,7 @@ router.put('/:id', [
     await post.save();
 
     // Populate author info
-    await post.populate('author', 'name email avatar');
+    await post.populate('author', 'name email avatar isPremium premiumFeatures');
 
     // Emit socket event for real-time update - only to users who follow the author
     const io = req.app.get('io');
@@ -816,7 +816,7 @@ router.post('/:id/share', async (req, res) => {
     // recipients: array of user IDs (only for message type)
     // message: optional message to include with the share
 
-    const post = await Post.findById(req.params.id).populate('author', 'name email avatar');
+    const post = await Post.findById(req.params.id).populate('author', 'name email avatar isPremium premiumFeatures');
 
     if (!post) {
       return res.status(404).json({
@@ -870,7 +870,7 @@ router.post('/:id/share', async (req, res) => {
       await post.save();
 
       // Populate the reshared post with author and original post details
-      await resharedPost.populate('author', 'name email avatar');
+      await resharedPost.populate('author', 'name email avatar isPremium premiumFeatures');
       await resharedPost.populate({
         path: 'originalPost',
         select: 'content author images videos mediaType reactions comments createdAt',
@@ -1199,7 +1199,7 @@ router.get('/saved/search', async (req, res) => {
       visibility: 'public'
     })
       .select('content author images videos reactions comments createdAt isReshare originalPost reshareCaption mediaType')
-      .populate('author', 'name email avatar')
+      .populate('author', 'name email avatar isPremium premiumFeatures')
       .populate({
         path: 'originalPost',
         select: 'content author images videos mediaType reactions comments createdAt',
@@ -1422,7 +1422,7 @@ router.post('/:id/react', [
     await post.addReaction(req.user._id, reactionType);
 
     // Populate post author to get recipient info
-    await post.populate('author', 'name email avatar');
+    await post.populate('author', 'name email avatar isPremium premiumFeatures');
 
     // Create notification for post author (if not reacting to own post)
     if (post.author._id.toString() !== req.user._id.toString()) {
@@ -1718,7 +1718,7 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
     await post.save();
     await post.populate('comments.user', 'name email avatar');
     await post.populate('comments.taggedUsers', 'name email avatar');
-    await post.populate('author', 'name email avatar');
+    await post.populate('author', 'name email avatar isPremium premiumFeatures');
 
     const newComment = post.comments[post.comments.length - 1];
 
@@ -2690,7 +2690,7 @@ router.get('/user/:userId', async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const posts = await Post.find({ author: req.params.userId })
-      .populate('author', 'name email avatar')
+      .populate('author', 'name email avatar isPremium premiumFeatures')
       .populate('comments.user', 'name email avatar')
       .populate('comments.taggedUsers', 'name email avatar')
       .sort({ createdAt: -1 })

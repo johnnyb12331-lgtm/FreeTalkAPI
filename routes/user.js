@@ -334,7 +334,7 @@ router.get('/search', authenticateToken, async (req, res) => {
         }
       ]
     })
-    .select('name email avatar isVerified createdAt')
+    .select('name email avatar isVerified isPremium premiumFeatures createdAt')
     .limit(parseInt(limit))
     .sort({ name: 1 });
 
@@ -450,7 +450,7 @@ router.get('/mention-search', authenticateToken, async (req, res) => {
       users = await User.find({
         _id: { $in: allowedUserIds }
       })
-      .select('name email avatar')
+      .select('name email avatar isPremium premiumFeatures')
       .limit(parseInt(limit))
       .sort({ name: 1 });
     } else {
@@ -468,7 +468,7 @@ router.get('/mention-search', authenticateToken, async (req, res) => {
           }
         ]
       })
-      .select('name email avatar')
+      .select('name email avatar isPremium premiumFeatures')
       .limit(parseInt(limit))
       .sort({ name: 1 });
     }
@@ -869,7 +869,7 @@ router.get('/:userId', authenticateToken, async (req, res) => {
     }
     
     const user = await User.findById(req.params.userId)
-      .select('name email avatar bio createdAt followers following');
+      .select('name email avatar bio createdAt followers following isPremium premiumFeatures');
 
     if (!user) {
       return res.status(404).json({
@@ -957,9 +957,9 @@ router.post('/:userId/follow', authenticateToken, async (req, res) => {
 
     // Get updated user data with counts
     const updatedFollowedUser = await User.findById(req.params.userId)
-      .select('_id name email avatar followers following');
+      .select('_id name email avatar followers following isPremium premiumFeatures');
     const updatedFollower = await User.findById(req.user._id)
-      .select('_id name email avatar followers following');
+      .select('_id name email avatar followers following isPremium premiumFeatures');
 
     const followedUserData = {
       userId: updatedFollowedUser._id.toString(),
@@ -1063,9 +1063,9 @@ router.post('/:userId/unfollow', authenticateToken, async (req, res) => {
 
     // Get updated user data with counts
     const updatedUnfollowedUser = await User.findById(req.params.userId)
-      .select('_id name email avatar followers following');
+      .select('_id name email avatar followers following isPremium premiumFeatures');
     const updatedUnfollower = await User.findById(req.user._id)
-      .select('_id name email avatar followers following');
+      .select('_id name email avatar followers following isPremium premiumFeatures');
 
     const unfollowedUserData = {
       userId: updatedUnfollowedUser._id.toString(),

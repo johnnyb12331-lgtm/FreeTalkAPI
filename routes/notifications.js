@@ -13,7 +13,7 @@ router.use(authenticateToken);
 router.get('/debug', async (req, res) => {
   try {
     const allNotifications = await Notification.find({ recipient: req.user._id })
-      .populate('sender', 'name email')
+      .populate('sender', 'name email isPremium premiumFeatures')
       .populate('post', 'content')
       .sort({ createdAt: -1 })
       .limit(10);
@@ -22,7 +22,7 @@ router.get('/debug', async (req, res) => {
       recipient: req.user._id,
       type: 'tag'
     })
-      .populate('sender', 'name email')
+      .populate('sender', 'name email isPremium premiumFeatures')
       .populate('post', 'content')
       .sort({ createdAt: -1 })
       .limit(5);
@@ -64,7 +64,7 @@ router.get('/', async (req, res) => {
     }
 
     const notifications = await Notification.find(query)
-      .populate('sender', 'name email avatar')
+      .populate('sender', 'name email avatar isPremium premiumFeatures')
       .populate('post', 'content images videos')
       .populate('story', 'mediaType mediaUrl textContent')
       .sort({ createdAt: -1 })
@@ -231,9 +231,24 @@ router.delete('/:id', async (req, res) => {
 
     await notification.deleteOne();
 
+    // Get updated unread count
+    const unreadCount = await Notification.countDocuments({
+      recipient: req.user._id,
+      isRead: false
+    });
+
+    // Emit socket event for unread count update
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${req.user._id}`).emit('notification:unread-count', {
+        unreadCount
+      });
+    }
+
     res.status(200).json({
       success: true,
-      message: 'Notification deleted'
+      message: 'Notification deleted',
+      data: { unreadCount }
     });
   } catch (error) {
     console.error('Delete notification error:', error);
