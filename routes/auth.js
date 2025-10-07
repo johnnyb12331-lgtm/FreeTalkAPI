@@ -151,6 +151,7 @@ router.post('/login', loginValidation, async (req, res) => {
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Login validation failed:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -159,24 +160,31 @@ router.post('/login', loginValidation, async (req, res) => {
     }
 
     const { email, password } = req.body;
+    console.log('🔐 Login attempt for email:', email);
 
     // Find user and include password for comparison
     const user = await User.findByEmail(email).select('+password');
     if (!user) {
+      console.log('❌ User not found for email:', email);
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
       });
     }
 
+    console.log('✅ User found:', user.email);
+
     // Check password
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
+      console.log('❌ Invalid password for user:', email);
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
       });
     }
+
+    console.log('✅ Password valid for user:', email);
 
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(user._id);

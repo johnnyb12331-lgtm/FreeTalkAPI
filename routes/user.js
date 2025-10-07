@@ -1550,4 +1550,73 @@ router.post('/:userId/report', [
   }
 });
 
+// @route   POST /api/user/get-verified
+// @desc    Instant verification - Free for all users
+// @access  Private
+router.post('/get-verified', authenticateToken, async (req, res) => {
+  try {
+    console.log('🎉 Instant verification request from user:', req.user._id);
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if already verified
+    if (user.isVerified) {
+      return res.status(200).json({
+        success: true,
+        message: 'Already verified',
+        data: {
+          isVerified: true,
+          verifiedAt: user.premiumPurchaseDate || new Date()
+        }
+      });
+    }
+
+    // Grant instant verification (FREE for everyone!)
+    user.isVerified = true;
+    user.isPremium = true;
+    
+    // Add verified_badge to premium features if not already there
+    if (!user.premiumFeatures.includes('verified_badge')) {
+      user.premiumFeatures.push('verified_badge');
+    }
+
+    // Set expiration to 1 year from now (can be changed or made permanent)
+    const expirationDate = new Date();
+    expirationDate.setFullYear(expirationDate.getFullYear() + 1);
+    user.premiumExpiresAt = expirationDate;
+    user.premiumPurchaseDate = new Date();
+
+    await user.save();
+
+    console.log('✅ User verified successfully:', user._id);
+
+    res.status(200).json({
+      success: true,
+      message: 'Congratulations! You are now verified! 🎉',
+      data: {
+        isVerified: true,
+        isPremium: true,
+        premiumFeatures: user.premiumFeatures,
+        premiumExpiresAt: user.premiumExpiresAt,
+        verifiedAt: user.premiumPurchaseDate
+      }
+    });
+
+  } catch (error) {
+    console.error('Instant verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify account',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

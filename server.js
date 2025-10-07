@@ -117,6 +117,20 @@ io.on('connection', (socket) => {
   console.log('🔌 New client connected:', socket.id);
 
   // Handle user authentication
+  // Handle ping (heartbeat) from client
+  socket.on('ping', (data) => {
+    // Respond with pong to confirm connection is alive
+    socket.emit('pong', { timestamp: new Date().toISOString() });
+    
+    // Update last active time
+    if (socket.userId) {
+      const User = require('./models/User');
+      User.findByIdAndUpdate(socket.userId, {
+        lastActive: new Date()
+      }).catch(err => console.error('Error updating lastActive:', err));
+    }
+  });
+
   socket.on('authenticate', async (userId) => {
     console.log(`👤 ==========================================`);
     console.log(`👤 User ${userId} authenticated with socket ${socket.id}`);
