@@ -70,6 +70,7 @@ const io = new Server(server, {
   },
   transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
   allowUpgrades: true, // Allow transport upgrades
+  allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
 });

@@ -902,7 +902,9 @@ router.get('/:userId', authenticateToken, async (req, res) => {
           postsCount,
           followersCount,
           followingCount,
-          isFollowing
+          isFollowing,
+          isPremium: user.isPremium || false,
+          premiumFeatures: user.premiumFeatures || []
         }
       }
     });
