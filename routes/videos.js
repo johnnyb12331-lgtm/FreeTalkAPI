@@ -306,8 +306,19 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/videos
 // @desc    Upload a new video
 // @access  Private
-router.post('/', upload.single('video'), createVideoValidation, async (req, res) => {
+router.post('/', authenticateToken, upload.single('video'), createVideoValidation, async (req, res) => {
   try {
+    // Check if user is authenticated
+    if (!req.user || !req.user._id) {
+      console.error('❌ Video upload: User not authenticated');
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required'
+      });
+    }
+
+    console.log(`📹 Video upload initiated by user: ${req.user._id}`);
+
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -375,15 +386,20 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
       if (musicTrackId) {
         audioTrackData.musicTrackId = musicTrackId;
         // Increment usage count for the music track
-        const MusicTrack = require('../models/MusicTrack');
-        const track = await MusicTrack.findById(musicTrackId);
-        if (track) {
-          await track.incrementUsage();
-          audioTrackData.url = track.url;
-          audioTrackData.title = track.title;
-          audioTrackData.artist = track.artist;
-          audioTrackData.source = track.source;
-          audioTrackData.license = track.license;
+        try {
+          const MusicTrack = require('../models/MusicTrack');
+          const track = await MusicTrack.findById(musicTrackId);
+          if (track) {
+            await track.incrementUsage();
+            audioTrackData.url = track.url;
+            audioTrackData.title = track.title;
+            audioTrackData.artist = track.artist;
+            audioTrackData.source = track.source;
+            audioTrackData.license = track.license;
+          }
+        } catch (musicError) {
+          console.warn('⚠️ MusicTrack model not found or error loading track:', musicError.message);
+          // Continue without music track data
         }
       } else {
         // Custom audio
@@ -478,10 +494,15 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
       data: { video }
     });
   } catch (error) {
-    console.error('Upload video error:', error);
+    console.error('❌ Upload video error:', error);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to upload video'
+      message: 'Failed to upload video',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
