@@ -4,12 +4,13 @@ const Video = require('../models/Video');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const { authenticateToken } = require('../middleware/auth');
+const { optionalAuth } = require('../middleware/optionalAuth');
 const upload = require('../config/multer');
 
 const router = express.Router();
 
-// All routes require authentication
-router.use(authenticateToken);
+// Most routes require authentication (except public endpoints like view counting)
+// NOTE: Individual routes that need public access will use optionalAuth instead
 
 // Validation rules
 const createVideoValidation = [
@@ -38,20 +39,36 @@ const commentValidation = [
 // @route   GET /api/videos
 // @desc    Get all videos (feed)
 // @access  Private
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
 
+    console.log(`📹 GET /api/videos - User: ${req.user?._id}, Page: ${page}, Limit: ${limit}`);
+
+    // Check if user is authenticated
+    if (!req.user || !req.user._id) {
+      console.error('❌ User not authenticated or missing user ID');
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication failed'
+      });
+    }
+
     // Get blocked user relationships
     const Block = require('../models/Block');
+    console.log('📹 Fetching blocked users...');
     const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+    console.log(`📹 Found ${blockedUserIds.length} blocked users`);
 
+    console.log('📹 Fetching video feed...');
     const result = await Video.getFeed({
       userId: req.user._id,
       page: parseInt(page),
       limit: parseInt(limit),
       excludeBlockedUsers: blockedUserIds
     });
+
+    console.log(`📹 Retrieved ${result.videos.length} videos from database`);
 
     // Format videos with additional metadata
     const formattedVideos = result.videos.map(video => ({
@@ -67,7 +84,7 @@ router.get('/', async (req, res) => {
       comments: undefined
     }));
 
-    console.log(`📹 Fetched ${formattedVideos.length} videos for feed`);
+    console.log(`✅ Successfully formatted ${formattedVideos.length} videos for feed`);
 
     res.status(200).json({
       success: true,
@@ -78,10 +95,15 @@ router.get('/', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get videos error:', error);
+    console.error('❌ Get videos error:', error);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to retrieve videos'
+      message: 'Failed to retrieve videos',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -313,7 +335,24 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
       });
     }
 
-    const { title, description, taggedUsers, visibility = 'public' } = req.body;
+    const { 
+      title, 
+      description, 
+      taggedUsers, 
+      visibility = 'public',
+      // Audio track fields
+      musicTrackId,
+      audioTitle,
+      audioArtist,
+      audioUrl,
+      audioSource,
+      audioLicense,
+      audioExternalId,
+      originalAudio = 'true',
+      audioStartTime = 0,
+      audioDuration,
+      audioVolume = 100
+    } = req.body;
 
     // Parse tagged users if provided
     let parsedTaggedUsers = [];
@@ -328,6 +367,35 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
     // Create video URL (adjust based on your server setup)
     const videoUrl = `/uploads/${req.file.filename}`;
 
+    // Prepare audio track data
+    let audioTrackData = null;
+    if (musicTrackId || audioUrl) {
+      audioTrackData = {};
+      
+      if (musicTrackId) {
+        audioTrackData.musicTrackId = musicTrackId;
+        // Increment usage count for the music track
+        const MusicTrack = require('../models/MusicTrack');
+        const track = await MusicTrack.findById(musicTrackId);
+        if (track) {
+          await track.incrementUsage();
+          audioTrackData.url = track.url;
+          audioTrackData.title = track.title;
+          audioTrackData.artist = track.artist;
+          audioTrackData.source = track.source;
+          audioTrackData.license = track.license;
+        }
+      } else {
+        // Custom audio
+        audioTrackData.url = audioUrl;
+        audioTrackData.title = audioTitle || 'Original Sound';
+        audioTrackData.artist = audioArtist || req.user.name;
+        audioTrackData.source = audioSource || 'original';
+        audioTrackData.license = audioLicense;
+        audioTrackData.externalId = audioExternalId;
+      }
+    }
+
     // Create new video document
     const video = new Video({
       author: req.user._id,
@@ -335,7 +403,12 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
       description,
       videoUrl,
       taggedUsers: parsedTaggedUsers,
-      visibility
+      visibility,
+      audioTrack: audioTrackData,
+      originalAudio: originalAudio === 'true' || originalAudio === true,
+      audioStartTime: parseFloat(audioStartTime) || 0,
+      audioDuration: audioDuration ? parseFloat(audioDuration) : null,
+      audioVolume: parseInt(audioVolume) || 100
     });
 
     await video.save();
@@ -415,8 +488,8 @@ router.post('/', upload.single('video'), createVideoValidation, async (req, res)
 
 // @route   POST /api/videos/:id/view
 // @desc    Record a video view
-// @access  Private
-router.post('/:id/view', async (req, res) => {
+// @access  Public (optional auth)
+router.post('/:id/view', optionalAuth, async (req, res) => {
   try {
     const video = await Video.findById(req.params.id);
 
@@ -427,28 +500,51 @@ router.post('/:id/view', async (req, res) => {
       });
     }
 
-    // Check if user has already viewed the video
-    const hasViewed = video.views.some(view => 
-      view.user.toString() === req.user._id.toString()
-    );
+    // If user is authenticated, track individual views
+    // If not authenticated, just increment view count
+    if (req.user) {
+      // Check if user has already viewed the video
+      const hasViewed = video.views.some(view => 
+        view.user.toString() === req.user._id.toString()
+      );
 
-    if (!hasViewed) {
+      if (!hasViewed) {
+        video.views.push({
+          user: req.user._id,
+          viewedAt: new Date()
+        });
+        await video.save();
+        console.log(`👁️ User ${req.user.name} viewed video ${video._id}`);
+
+        // Emit socket event for real-time view count updates
+        const io = req.app.get('io');
+        if (io) {
+          io.emit('video:viewed', {
+            videoId: video._id,
+            viewCount: video.views.length,
+            userId: req.user._id
+          });
+          console.log('🔔 Emitted video:viewed event');
+        }
+      }
+    } else {
+      // Anonymous view - just increment counter without tracking user
+      console.log(`👁️ Anonymous user viewed video ${video._id}`);
+      // We still track it in the views array but without a user ID
+      // This allows consistent view counting
       video.views.push({
-        user: req.user._id,
         viewedAt: new Date()
+        // No user field - indicates anonymous view
       });
       await video.save();
-      console.log(`👁️ User ${req.user.name} viewed video ${video._id}`);
-
-      // Emit socket event for real-time view count updates
+      
+      // Emit socket event for anonymous view
       const io = req.app.get('io');
       if (io) {
         io.emit('video:viewed', {
           videoId: video._id,
-          viewCount: video.views.length,
-          userId: req.user._id
+          viewCount: video.views.length
         });
-        console.log('🔔 Emitted video:viewed event');
       }
     }
 
