@@ -73,8 +73,8 @@ router.get('/', authenticateToken, async (req, res) => {
     // Format videos with additional metadata
     const formattedVideos = result.videos.map(video => ({
       ...video,
-      isLiked: video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false,
-      isViewed: video.views?.some(view => view.user.toString() === req.user._id.toString()) || false,
+      isLiked: video.likes?.some(like => like.user && like.user.toString() === req.user._id.toString()) || false,
+      isViewed: video.views?.some(view => view.user && view.user.toString() === req.user._id.toString()) || false,
       likeCount: video.likes?.length || 0,
       viewCount: video.views?.length || 0,
       commentCount: video.comments?.length || 0,
