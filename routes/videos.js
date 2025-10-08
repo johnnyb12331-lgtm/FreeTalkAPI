@@ -526,7 +526,7 @@ router.post('/:id/view', optionalAuth, async (req, res) => {
     if (req.user) {
       // Check if user has already viewed the video
       const hasViewed = video.views.some(view => 
-        view.user.toString() === req.user._id.toString()
+        view.user && view.user.toString() === req.user._id.toString()
       );
 
       if (!hasViewed) {
@@ -586,7 +586,7 @@ router.post('/:id/view', optionalAuth, async (req, res) => {
 // @route   POST /api/videos/:id/like
 // @desc    Like or unlike a video
 // @access  Private
-router.post('/:id/like', async (req, res) => {
+router.post('/:id/like', authenticateToken, async (req, res) => {
   try {
     const video = await Video.findById(req.params.id).populate('author', 'name email avatar');
 
@@ -599,7 +599,7 @@ router.post('/:id/like', async (req, res) => {
 
     // Check if user has already liked the video
     const likeIndex = video.likes.findIndex(like => 
-      like.user.toString() === req.user._id.toString()
+      like.user && like.user.toString() === req.user._id.toString()
     );
 
     let action;
@@ -686,7 +686,7 @@ router.post('/:id/like', async (req, res) => {
 // @route   POST /api/videos/:id/comment
 // @desc    Add a comment to a video
 // @access  Private
-router.post('/:id/comment', commentValidation, async (req, res) => {
+router.post('/:id/comment', authenticateToken, commentValidation, async (req, res) => {
   try {
     // Check for validation errors
     const errors = validationResult(req);
