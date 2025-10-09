@@ -811,11 +811,26 @@ router.delete('/:id', async (req, res) => {
 // @route   GET /api/music/built-in/stream/:filename
 // @desc    Stream built-in music file by filename (supports range requests)
 // @access  Private
+// OPTIONS handler for CORS preflight
+router.options('/built-in/stream/:filename', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Authorization');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  res.status(200).end();
+});
+
 router.get('/built-in/stream/:filename', async (req, res) => {
   try {
     const filename = req.params.filename;
     const path = require('path');
     const fs = require('fs');
+
+    // Set CORS headers for streaming (important for web browsers)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Authorization');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 
     // Allow only .mp3 filenames with safe characters
     if (!/^[a-zA-Z0-9\s\-_()&,.]+\.mp3$/i.test(filename)) {
