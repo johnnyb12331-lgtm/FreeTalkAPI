@@ -34,31 +34,41 @@ async function makePremium() {
       process.exit(1);
     }
 
-    // Set premium status with verified badge
+    // Set premium status (Pro tier with all features)
     const oneYearFromNow = new Date();
     oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
 
     user.isPremium = true;
+    user.premiumTier = 'pro';
     user.premiumFeatures = [
       'profile_visitors',
       'ad_free', 
       'custom_themes',
       'unlimited_storage',
-      'verified_badge'
+      'advanced_analytics',
+      'priority_support',
+      'early_access',
+      'custom_badge_color',
+      'increased_upload_limit',
+      'video_downloads',
+      'read_receipts_control',
+      'ghost_mode'
     ];
     user.premiumPurchaseDate = new Date();
     user.premiumExpiresAt = oneYearFromNow;
 
     await user.save();
 
-    console.log('\n✅ User granted premium status with verified badge!');
+    console.log('\n✅ User granted Premium Pro status!');
     console.log('👤 Name:', user.name);
     console.log('📧 Email:', user.email);
     console.log('🆔 ID:', user._id);
     console.log('💎 Premium:', user.isPremium);
-    console.log('🎖️ Features:', user.premiumFeatures.join(', '));
+    console.log('� Tier:', user.premiumTier.toUpperCase());
+    console.log('�🎖️ Features:', user.premiumFeatures.length + ' premium features');
     console.log('📅 Expires:', user.premiumExpiresAt.toLocaleDateString());
-    console.log('\n🎉 The verified badge should now appear in the app!');
+    console.log('\n🎉 Premium Pro badge will now appear in the app!');
+    console.log('💡 Tip: User can still get FREE verification separately!');
 
     process.exit(0);
   } catch (error) {

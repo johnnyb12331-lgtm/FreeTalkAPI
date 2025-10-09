@@ -1,23 +1,11 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
-const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
+const { authLimiter, passwordResetLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
-
-// Rate limiting for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message: {
-    success: false,
-    message: 'Too many authentication attempts, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 
 // Validation rules
 const registerValidation = [
@@ -36,8 +24,6 @@ const registerValidation = [
   body('password')
     .isLength({ min: 8 })
     .withMessage('Password must be at least 8 characters long')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-    .withMessage('Password must contain at least one lowercase letter, one uppercase letter, and one number')
 ];
 
 const loginValidation = [
@@ -76,9 +62,13 @@ router.post('/register', registerValidation, async (req, res) => {
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      // Format validation errors into user-friendly messages
+      const errorMessages = errors.array().map(err => err.msg);
+      const detailedMessage = errorMessages.join('. ');
+      
       return res.status(400).json({
         success: false,
-        message: 'Validation failed',
+        message: detailedMessage,
         errors: errors.array()
       });
     }

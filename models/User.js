@@ -30,6 +30,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  feedBannerPhoto: {
+    type: String,
+    default: null
+  },
   bio: {
     type: String,
     maxlength: [500, 'Bio cannot exceed 500 characters'],
@@ -77,6 +81,15 @@ const userSchema = new mongoose.Schema({
   isVerified: {
     type: Boolean,
     default: false
+  },
+  verifiedAt: {
+    type: Date,
+    default: null
+  },
+  verificationMethod: {
+    type: String,
+    enum: ['free', 'manual', 'id_verification'],
+    default: null
   },
   isAdmin: {
     type: Boolean,
@@ -131,7 +144,23 @@ const userSchema = new mongoose.Schema({
   },
   premiumFeatures: [{
     type: String,
-    enum: ['profile_visitors', 'ad_free', 'custom_themes', 'unlimited_storage', 'verified_badge']
+    enum: [
+      // Premium-exclusive features
+      'profile_visitors',
+      'ad_free', 
+      'custom_themes',
+      'unlimited_storage',
+      'advanced_analytics',
+      'priority_support',
+      'early_access',
+      'custom_badge_color',
+      'increased_upload_limit',
+      'video_downloads',
+      'read_receipts_control',
+      'ghost_mode',
+      // Legacy (being phased out)
+      'verified_badge'
+    ]
   }],
   premiumExpiresAt: {
     type: Date,
@@ -139,6 +168,11 @@ const userSchema = new mongoose.Schema({
   },
   premiumPurchaseDate: {
     type: Date,
+    default: null
+  },
+  premiumTier: {
+    type: String,
+    enum: ['basic', 'plus', 'pro'],
     default: null
   },
   stripeCustomerId: {
@@ -211,5 +245,31 @@ userSchema.methods.getPublicProfile = function() {
 userSchema.statics.findByEmail = function(email) {
   return this.findOne({ email: email.toLowerCase() });
 };
+
+// ==================== INDEXES FOR PERFORMANCE ====================
+// Email index (unique) - already set in schema, but explicitly defined here
+userSchema.index({ email: 1 }, { unique: true });
+
+// Index for searching users by name
+userSchema.index({ name: 'text' });
+
+// Index for premium users (for filtering/analytics)
+userSchema.index({ isPremium: 1, premiumExpiresAt: 1 });
+
+// Index for admin users
+userSchema.index({ isAdmin: 1 });
+
+// Index for banned/suspended users
+userSchema.index({ isBanned: 1, isSuspended: 1 });
+
+// Index for last active queries (for online status)
+userSchema.index({ lastActive: -1 });
+
+// Compound index for followers/following queries
+userSchema.index({ followers: 1 });
+userSchema.index({ following: 1 });
+
+// Index for account creation date
+userSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('User', userSchema);

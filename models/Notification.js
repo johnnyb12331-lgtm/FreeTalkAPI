@@ -137,6 +137,22 @@ notificationSchema.methods.markAsRead = async function() {
   return await this.save();
 };
 
+// ==================== INDEXES FOR PERFORMANCE ====================
+// Primary index for fetching user notifications
+notificationSchema.index({ recipient: 1, createdAt: -1 });
+
+// Index for unread notifications (most common query)
+notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+
+// Index for notification type queries
+notificationSchema.index({ recipient: 1, type: 1, createdAt: -1 });
+
+// Index for finding notifications by sender
+notificationSchema.index({ sender: 1, createdAt: -1 });
+
+// Compound index for duplicate detection
+notificationSchema.index({ recipient: 1, sender: 1, type: 1, post: 1, createdAt: -1 });
+
 const Notification = mongoose.model('Notification', notificationSchema);
 
 module.exports = Notification;

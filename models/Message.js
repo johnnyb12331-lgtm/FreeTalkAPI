@@ -24,7 +24,7 @@ const messageSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['text', 'image', 'video', 'document', 'gif', 'shared_post', 'shared_story'],
+    enum: ['text', 'image', 'video', 'document', 'gif', 'voice', 'shared_post', 'shared_story'],
     default: 'text'
   },
   sharedPost: {
@@ -55,6 +55,14 @@ const messageSchema = new mongoose.Schema({
   },
   gifUrl: {
     type: String,
+    default: null
+  },
+  duration: {
+    type: Number, // Duration in seconds for voice messages
+    default: null
+  },
+  waveformData: {
+    type: [Number], // Array of amplitude values for waveform visualization
     default: null
   },
   replyTo: {
@@ -108,12 +116,24 @@ const messageSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for efficient querying
+// ==================== INDEXES FOR PERFORMANCE ====================
+// Primary index for fetching messages in a conversation
 messageSchema.index({ conversation: 1, createdAt: -1 });
+
+// Index for sender-recipient queries
 messageSchema.index({ sender: 1, recipient: 1, createdAt: -1 });
+
+// Index for unread messages
+messageSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
 
 // Text index for search functionality
 messageSchema.index({ content: 'text', fileName: 'text' });
+
+// Index for message type queries (finding images, videos, etc.)
+messageSchema.index({ conversation: 1, type: 1, createdAt: -1 });
+
+// Index for reply threads
+messageSchema.index({ replyTo: 1 });
 
 // Virtual for message age
 messageSchema.virtual('age').get(function() {

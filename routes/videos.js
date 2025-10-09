@@ -38,27 +38,21 @@ const commentValidation = [
 
 // @route   GET /api/videos
 // @desc    Get all videos (feed)
-// @access  Private
-router.get('/', authenticateToken, async (req, res) => {
+// @access  Public (with optional authentication)
+router.get('/', optionalAuth, async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
 
-    console.log(`📹 GET /api/videos - User: ${req.user?._id}, Page: ${page}, Limit: ${limit}`);
+    console.log(`📹 GET /api/videos - User: ${req.user?._id || 'Anonymous'}, Page: ${page}, Limit: ${limit}`);
 
-    // Check if user is authenticated
-    if (!req.user || !req.user._id) {
-      console.error('❌ User not authenticated or missing user ID');
-      return res.status(401).json({
-        success: false,
-        message: 'User authentication failed'
-      });
+    // Get blocked user relationships (if user is authenticated)
+    let blockedUserIds = [];
+    if (req.user && req.user._id) {
+      const Block = require('../models/Block');
+      console.log('📹 Fetching blocked users...');
+      blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+      console.log(`📹 Found ${blockedUserIds.length} blocked users`);
     }
-
-    // Get blocked user relationships
-    const Block = require('../models/Block');
-    console.log('📹 Fetching blocked users...');
-    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
-    console.log(`📹 Found ${blockedUserIds.length} blocked users`);
 
     console.log('📹 Fetching video feed...');
     const result = await Video.getFeed({
@@ -73,8 +67,8 @@ router.get('/', authenticateToken, async (req, res) => {
     // Format videos with additional metadata
     const formattedVideos = result.videos.map(video => ({
       ...video,
-      isLiked: video.likes?.some(like => like.user && like.user.toString() === req.user._id.toString()) || false,
-      isViewed: video.views?.some(view => view.user && view.user.toString() === req.user._id.toString()) || false,
+      isLiked: req.user ? (video.likes?.some(like => like.user && like.user.toString() === req.user._id.toString()) || false) : false,
+      isViewed: req.user ? (video.views?.some(view => view.user && view.user.toString() === req.user._id.toString()) || false) : false,
       likeCount: video.likes?.length || 0,
       viewCount: video.views?.length || 0,
       commentCount: video.comments?.length || 0,
@@ -108,10 +102,114 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+// @route   GET /api/videos/top
+// @desc    Get top videos by engagement (likes + comments)
+// @access  Public (with optional authentication)
+router.get('/top', optionalAuth, async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    console.log(`🏆 GET /api/videos/top - Limit: ${limit}`);
+
+    // Get blocked user relationships (if user is authenticated)
+    let blockedUserIds = [];
+    if (req.user && req.user._id) {
+      const Block = require('../models/Block');
+      blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+    }
+
+    // Aggregate to calculate engagement score and sort
+    const topVideos = await Video.aggregate([
+      {
+        $match: {
+          author: { $nin: blockedUserIds }
+        }
+      },
+      {
+        $addFields: {
+          likeCount: { $size: { $ifNull: ['$likes', []] } },
+          commentCount: { $size: { $ifNull: ['$comments', []] } },
+          viewCount: { $size: { $ifNull: ['$views', []] } }
+        }
+      },
+      {
+        $addFields: {
+          engagementScore: { 
+            $add: [
+              { $multiply: ['$likeCount', 2] }, // Likes count double
+              { $multiply: ['$commentCount', 3] }, // Comments count triple
+              { $multiply: ['$viewCount', 0.1] } // Views count less
+            ]
+          }
+        }
+      },
+      { $sort: { engagementScore: -1 } },
+      { $limit: parseInt(limit) },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'author',
+          foreignField: '_id',
+          as: 'author'
+        }
+      },
+      { $unwind: '$author' },
+      {
+        $project: {
+          _id: 1,
+          title: 1,
+          description: 1,
+          videoUrl: 1,
+          thumbnailUrl: 1,
+          duration: 1,
+          likeCount: 1,
+          commentCount: 1,
+          viewCount: 1,
+          engagementScore: 1,
+          createdAt: 1,
+          'author._id': 1,
+          'author.name': 1,
+          'author.avatar': 1,
+          'author.isVerified': 1
+        }
+      }
+    ]);
+
+    // Add user-specific metadata if authenticated
+    const formattedVideos = topVideos.map(video => {
+      const videoObj = video;
+      if (req.user) {
+        // Check if user liked or viewed (requires fetching full video for these arrays)
+        videoObj.isLiked = false; // Will be updated by client if needed
+        videoObj.isViewed = false;
+      }
+      return videoObj;
+    });
+
+    console.log(`✅ Retrieved ${formattedVideos.length} top videos`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Top videos retrieved successfully',
+      data: {
+        videos: formattedVideos,
+        count: formattedVideos.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get top videos error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve top videos',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // @route   GET /api/videos/search
 // @desc    Search videos by title or description
-// @access  Private
-router.get('/search', async (req, res) => {
+// @access  Public (with optional authentication)
+router.get('/search', optionalAuth, async (req, res) => {
   try {
     const { q, page = 1, limit = 20 } = req.query;
     
@@ -125,28 +223,32 @@ router.get('/search', async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const searchQuery = q.trim();
 
-    // Get blocked user relationships
-    const Block = require('../models/Block');
-    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
-
-    // Get current user with following list
-    const currentUser = await User.findById(req.user._id).select('following');
-    const followingIds = currentUser.following || [];
+    // Get blocked user relationships (if user is authenticated)
+    let blockedUserIds = [];
+    if (req.user && req.user._id) {
+      const Block = require('../models/Block');
+      blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+    }
 
     // Search videos by title or description (case-insensitive)
-    // Only search videos from users the current user follows
+    // Search ALL public videos (not limited to following)
     const searchRegex = new RegExp(searchQuery, 'i');
-    const videos = await Video.find({
+    
+    const searchCriteria = {
       $or: [
         { title: searchRegex },
         { description: searchRegex }
       ],
-      author: { 
-        $in: followingIds,
-        $nin: blockedUserIds
-      },
+      visibility: 'public',
       isDeleted: false
-    })
+    };
+    
+    // Exclude blocked users if any
+    if (blockedUserIds.length > 0) {
+      searchCriteria.author = { $nin: blockedUserIds };
+    }
+    
+    const videos = await Video.find(searchCriteria)
       .populate('author', 'name email avatar')
       .populate('taggedUsers', 'name email avatar isPremium premiumFeatures')
       .sort({ createdAt: -1 })
@@ -155,23 +257,13 @@ router.get('/search', async (req, res) => {
       .lean();
 
     // Get total count for pagination
-    const total = await Video.countDocuments({
-      $or: [
-        { title: searchRegex },
-        { description: searchRegex }
-      ],
-      author: { 
-        $in: followingIds,
-        $nin: blockedUserIds
-      },
-      isDeleted: false
-    });
+    const total = await Video.countDocuments(searchCriteria);
 
     // Format videos with metadata
     const formattedVideos = videos.map(video => ({
       ...video,
-      isLiked: video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false,
-      isViewed: video.views?.some(view => view.user.toString() === req.user._id.toString()) || false,
+      isLiked: req.user ? (video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false) : false,
+      isViewed: req.user ? (video.views?.some(view => view.user.toString() === req.user._id.toString()) || false) : false,
       likeCount: video.likes?.length || 0,
       viewCount: video.views?.length || 0,
       commentCount: video.comments?.length || 0,
@@ -206,8 +298,8 @@ router.get('/search', async (req, res) => {
 
 // @route   GET /api/videos/user/:userId
 // @desc    Get videos by specific user
-// @access  Private
-router.get('/user/:userId', authenticateToken, async (req, res) => {
+// @access  Public (with optional authentication)
+router.get('/user/:userId', optionalAuth, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
 
@@ -227,8 +319,8 @@ router.get('/user/:userId', authenticateToken, async (req, res) => {
     // Format videos
     const formattedVideos = result.videos.map(video => ({
       ...video,
-      isLiked: video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false,
-      isViewed: video.views?.some(view => view.user.toString() === req.user._id.toString()) || false,
+      isLiked: req.user ? (video.likes?.some(like => like.user.toString() === req.user._id.toString()) || false) : false,
+      isViewed: req.user ? (video.views?.some(view => view.user.toString() === req.user._id.toString()) || false) : false,
       likeCount: video.likes?.length || 0,
       viewCount: video.views?.length || 0,
       commentCount: video.comments?.length || 0,
@@ -868,6 +960,102 @@ router.delete('/:id', async (req, res) => {
       success: false,
       message: 'Failed to delete video'
     });
+  }
+});
+
+// @route   GET /api/videos/:id/download
+// @desc    Download a video file with proper headers
+// @access  Public (videos are publicly accessible)
+router.get('/:id/download', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log(`📥 Download request for video: ${id}`);
+
+    // Find the video
+    const video = await Video.findById(id);
+
+    if (!video) {
+      console.error(`❌ Video not found: ${id}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Video not found'
+      });
+    }
+
+    // Check if video is accessible (not deleted and public or user has access)
+    if (video.isDeleted) {
+      console.error(`❌ Video is deleted: ${id}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Video not found'
+      });
+    }
+
+    // Get the video file path
+    const videoPath = video.videoUrl;
+    if (!videoPath) {
+      console.error(`❌ Video URL not found for video: ${id}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Video file not found'
+      });
+    }
+
+    // Construct the full file path
+    const path = require('path');
+    const fs = require('fs');
+    const filePath = path.join(__dirname, '..', videoPath.replace(/^\//, ''));
+    
+    console.log(`📁 Looking for video file at: ${filePath}`);
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      console.error(`❌ Video file not found at path: ${filePath}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Video file not found'
+      });
+    }
+
+    // Get file stats
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    
+    // Set proper headers for download
+    const fileName = `FreeTalk_${video._id}.mp4`;
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+    console.log(`✅ Sending video file: ${fileName} (${fileSize} bytes)`);
+
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+    fileStream.on('error', (error) => {
+      console.error(`❌ Error streaming video file: ${error}`);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: 'Error downloading video'
+        });
+      }
+    });
+
+  } catch (error) {
+    console.error('Download video error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to download video'
+      });
+    }
   }
 });
 

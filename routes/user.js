@@ -5,8 +5,29 @@ const { authenticateToken } = require('../middleware/auth');
 const upload = require('../config/multer');
 const path = require('path');
 const fs = require('fs');
+const { 
+  profileUpdateLimiter, 
+  followLimiter, 
+  generalLimiter,
+  searchLimiter 
+} = require('../middleware/rateLimiter');
 
 const router = express.Router();
+
+// Apply general rate limiting to all user routes
+router.use(generalLimiter);
+
+// TEMPORARY: Helper function to check premium features (currently FREE for all)
+// TODO: Revert this when premium is enabled
+function hasPremiumFeature(user, featureName) {
+  // Temporarily making all premium features free for all users
+  return true;
+  
+  // Original logic (uncomment when reverting):
+  // return user.isPremium && 
+  //        user.premiumFeatures && 
+  //        user.premiumFeatures.includes(featureName);
+}
 
 // Validation rules
 const updateProfileValidation = [
@@ -245,6 +266,90 @@ router.put('/profile/avatar', authenticateToken, upload.single('avatar'), async 
   }
 });
 
+// @route   PUT /api/user/feed-banner
+// @desc    Upload feed banner photo
+// @access  Private
+router.put('/feed-banner', authenticateToken, upload.single('feedBanner'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No banner file provided'
+      });
+    }
+
+    // Delete old banner if it exists
+    const user = await User.findById(req.user._id);
+    if (user.feedBannerPhoto) {
+      const oldBannerPath = path.join(__dirname, '..', user.feedBannerPhoto.replace(/^\//, ''));
+      if (fs.existsSync(oldBannerPath)) {
+        fs.unlinkSync(oldBannerPath);
+      }
+    }
+
+    // Update user feed banner path
+    const bannerPath = `/uploads/${req.file.filename}`;
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { feedBannerPhoto: bannerPath },
+      { new: true, runValidators: true }
+    );
+
+    // Get user stats for complete profile
+    const Post = require('../models/Post');
+    const postsCount = await Post.countDocuments({ author: updatedUser._id });
+    const followersCount = updatedUser.followers ? updatedUser.followers.length : 0;
+    const followingCount = updatedUser.following ? updatedUser.following.length : 0;
+
+    const completeUserProfile = {
+      ...updatedUser.getPublicProfile(),
+      postsCount,
+      followersCount,
+      followingCount
+    };
+
+    // Emit socket event for real-time update
+    const io = req.app.get('io');
+    const userSockets = req.app.get('userSockets');
+    
+    if (io && userSockets) {
+      // Emit to the user's socket room
+      io.to(`user:${req.user._id}`).emit('user:profile-updated', {
+        userId: req.user._id,
+        feedBannerPhoto: bannerPath,
+        user: completeUserProfile
+      });
+      
+      console.log(`🖼️ Feed banner updated for user ${req.user._id}, emitting to room: user:${req.user._id}`);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Feed banner updated successfully',
+      data: {
+        feedBannerPhoto: bannerPath,
+        user: completeUserProfile
+      }
+    });
+
+  } catch (error) {
+    console.error('Update feed banner error:', error);
+    
+    // Clean up uploaded file if there was an error
+    if (req.file) {
+      const filePath = path.join(__dirname, '..', 'uploads', req.file.filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update feed banner'
+    });
+  }
+});
+
 // @route   GET /api/user/suggested
 // @desc    Get random suggested users to follow
 // @access  Private
@@ -297,6 +402,75 @@ router.get('/suggested', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get suggested users'
+    });
+  }
+});
+
+// @route   GET /api/user/top
+// @desc    Get top users by follower count
+// @access  Private
+router.get('/top', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    // Get blocked user relationships
+    const Block = require('../models/Block');
+    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+
+    // Get current user's following list
+    const currentUser = await User.findById(req.user._id).select('following');
+    const followingIds = currentUser.following || [];
+
+    // Find top users by follower count (exclude blocked and current user)
+    const topUsers = await User.aggregate([
+      {
+        $match: {
+          _id: { 
+            $ne: req.user._id, // Exclude current user
+            $nin: blockedUserIds // Exclude blocked users
+          }
+        }
+      },
+      {
+        $addFields: {
+          followersCount: { $size: { $ifNull: ['$followers', []] } }
+        }
+      },
+      { $sort: { followersCount: -1 } }, // Sort by follower count descending
+      { $limit: parseInt(limit) },
+      {
+        $project: {
+          name: 1,
+          email: 1,
+          avatar: 1,
+          bio: 1,
+          isVerified: 1,
+          followersCount: 1,
+          createdAt: 1
+        }
+      }
+    ]);
+
+    // Add isFollowing flag for each user
+    const topUsersWithFollowStatus = topUsers.map(user => ({
+      ...user,
+      isFollowing: followingIds.some(id => id.toString() === user._id.toString())
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Top users retrieved',
+      data: {
+        users: topUsersWithFollowStatus,
+        count: topUsersWithFollowStatus.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Get top users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get top users'
     });
   }
 });
@@ -601,10 +775,10 @@ router.put('/password', authenticateToken, async (req, res) => {
       });
     }
 
-    if (newPassword.length < 6) {
+    if (newPassword.length < 4) {
       return res.status(400).json({
         success: false,
-        message: 'New password must be at least 6 characters long'
+        message: 'New password must be at least 4 characters long'
       });
     }
 
@@ -683,6 +857,150 @@ router.get('/blocked', authenticateToken, async (req, res) => {
   }
 });
 
+// @route   GET /api/users/profile-visitors/stats
+// @desc    Get profile visitor statistics (count and recent visitors)
+// @access  Private
+router.get('/profile-visitors/stats', authenticateToken, async (req, res) => {
+  try {
+    const ProfileVisitor = require('../models/ProfileVisitor');
+    const userId = req.user._id;
+    
+    // Check if user has premium profile_visitors feature
+    const user = await User.findById(userId).select('isPremium premiumFeatures');
+    const hasFeature = hasPremiumFeature(user, 'profile_visitors');
+
+    // Calculate date ranges
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // Get visitor counts for different time periods
+    const [totalCount, todayCount, weekCount, monthCount] = await Promise.all([
+      // Total unique visitors (all time)
+      ProfileVisitor.aggregate([
+        { $match: { profileOwnerId: userId } },
+        { $group: { _id: '$visitorId' } },
+        { $count: 'total' }
+      ]),
+      // Today's unique visitors
+      ProfileVisitor.aggregate([
+        { 
+          $match: { 
+            profileOwnerId: userId,
+            visitedAt: { $gte: oneDayAgo }
+          } 
+        },
+        { $group: { _id: '$visitorId' } },
+        { $count: 'total' }
+      ]),
+      // This week's unique visitors
+      ProfileVisitor.aggregate([
+        { 
+          $match: { 
+            profileOwnerId: userId,
+            visitedAt: { $gte: oneWeekAgo }
+          } 
+        },
+        { $group: { _id: '$visitorId' } },
+        { $count: 'total' }
+      ]),
+      // This month's unique visitors
+      ProfileVisitor.aggregate([
+        { 
+          $match: { 
+            profileOwnerId: userId,
+            visitedAt: { $gte: oneMonthAgo }
+          } 
+        },
+        { $group: { _id: '$visitorId' } },
+        { $count: 'total' }
+      ])
+    ]);
+
+    const stats = {
+      total: totalCount.length > 0 ? totalCount[0].total : 0,
+      today: todayCount.length > 0 ? todayCount[0].total : 0,
+      thisWeek: weekCount.length > 0 ? weekCount[0].total : 0,
+      thisMonth: monthCount.length > 0 ? monthCount[0].total : 0
+    };
+
+    let recentVisitors = null;
+
+    // If user has premium feature, return recent visitors list
+    if (hasFeature) {
+      const visitors = await ProfileVisitor.aggregate([
+        {
+          $match: {
+            profileOwnerId: userId,
+            visitedAt: { $gte: oneWeekAgo } // Last 7 days
+          }
+        },
+        {
+          $sort: { visitedAt: -1 }
+        },
+        {
+          $group: {
+            _id: '$visitorId',
+            lastVisit: { $first: '$visitedAt' }
+          }
+        },
+        {
+          $sort: { lastVisit: -1 }
+        },
+        {
+          $limit: 10 // Show up to 10 recent visitors
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'visitor'
+          }
+        },
+        {
+          $unwind: '$visitor'
+        },
+        {
+          $project: {
+            _id: 1,
+            lastVisit: 1,
+            'visitor._id': 1,
+            'visitor.name': 1,
+            'visitor.avatar': 1,
+            'visitor.bio': 1,
+            'visitor.isPremium': 1,
+            'visitor.isVerified': 1
+          }
+        }
+      ]);
+
+      recentVisitors = visitors.map(v => ({
+        user: v.visitor,
+        lastVisit: v.lastVisit
+      }));
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile visitor stats retrieved successfully',
+      data: {
+        stats,
+        recentVisitors,
+        hasPremiumAccess: hasFeature
+      }
+    });
+
+  } catch (error) {
+    console.error('Get profile visitor stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get profile visitor stats'
+    });
+  }
+});
+
 // @route   GET /api/users/profile-visitors
 // @desc    Get list of users who visited your profile
 // @access  Private
@@ -692,6 +1010,18 @@ router.get('/profile-visitors', authenticateToken, async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
+
+    // Check if user has premium profile_visitors feature
+    const user = await User.findById(req.user._id).select('isPremium premiumFeatures');
+    const hasFeature = hasPremiumFeature(user, 'profile_visitors');
+
+    if (!hasFeature) {
+      return res.status(403).json({
+        success: false,
+        message: 'This feature requires premium subscription with profile_visitors feature',
+        requiresPremium: true
+      });
+    }
 
     // Get unique visitors with their most recent visit
     const visitors = await ProfileVisitor.aggregate([
@@ -738,7 +1068,9 @@ router.get('/profile-visitors', authenticateToken, async (req, res) => {
           'visitor._id': 1,
           'visitor.name': 1,
           'visitor.avatar': 1,
-          'visitor.bio': 1
+          'visitor.bio': 1,
+          'visitor.isPremium': 1,
+          'visitor.isVerified': 1
         }
       }
     ]);
@@ -1553,7 +1885,7 @@ router.post('/:userId/report', [
 });
 
 // @route   POST /api/user/get-verified
-// @desc    Instant verification - Free for all users
+// @desc    Instant verification - Free for all users (NO premium required!)
 // @access  Private
 router.post('/get-verified', authenticateToken, async (req, res) => {
   try {
@@ -1575,39 +1907,29 @@ router.post('/get-verified', authenticateToken, async (req, res) => {
         message: 'Already verified',
         data: {
           isVerified: true,
-          verifiedAt: user.premiumPurchaseDate || new Date()
+          verifiedAt: user.verifiedAt || new Date(),
+          verificationMethod: user.verificationMethod
         }
       });
     }
 
-    // Grant instant verification (FREE for everyone!)
+    // Grant instant verification (FREE - does NOT grant premium!)
     user.isVerified = true;
-    user.isPremium = true;
-    
-    // Add verified_badge to premium features if not already there
-    if (!user.premiumFeatures.includes('verified_badge')) {
-      user.premiumFeatures.push('verified_badge');
-    }
-
-    // Set expiration to 1 year from now (can be changed or made permanent)
-    const expirationDate = new Date();
-    expirationDate.setFullYear(expirationDate.getFullYear() + 1);
-    user.premiumExpiresAt = expirationDate;
-    user.premiumPurchaseDate = new Date();
+    user.verifiedAt = new Date();
+    user.verificationMethod = 'free';
 
     await user.save();
 
-    console.log('✅ User verified successfully:', user._id);
+    console.log('✅ User verified successfully (free verification):', user._id);
 
     res.status(200).json({
       success: true,
-      message: 'Congratulations! You are now verified! 🎉',
+      message: 'Congratulations! You are now verified! 🎉\n\nVerified users get:\n✅ Blue verification badge\n✅ Higher trust in search results\n✅ Priority in recommendations\n✅ Access to verified-only spaces\n\nUpgrade to Premium for exclusive features!',
       data: {
         isVerified: true,
-        isPremium: true,
-        premiumFeatures: user.premiumFeatures,
-        premiumExpiresAt: user.premiumExpiresAt,
-        verifiedAt: user.premiumPurchaseDate
+        isPremium: user.isPremium,
+        verifiedAt: user.verifiedAt,
+        verificationMethod: user.verificationMethod
       }
     });
 
@@ -1616,6 +1938,119 @@ router.post('/get-verified', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to verify account',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get verified-only feed (only verified users shown)
+// @access  Private (requires verification)
+router.get('/verified-feed', authenticateToken, async (req, res) => {
+  try {
+    const requestingUser = await User.findById(req.user._id);
+    
+    if (!requestingUser.isVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'This feature is only available to verified users. Get verified for free!',
+        requiresVerification: true
+      });
+    }
+
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+
+    // Get only verified users
+    const verifiedUsers = await User.find({ 
+      isVerified: true,
+      _id: { $ne: req.user._id }
+    })
+      .select('name email avatar bio isVerified isPremium premiumFeatures verifiedAt followers following')
+      .sort({ verifiedAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await User.countDocuments({ isVerified: true, _id: { $ne: req.user._id } });
+
+    res.json({
+      success: true,
+      data: {
+        users: verifiedUsers,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching verified feed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching verified users',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get user's verification status and benefits
+// @access  Private
+router.get('/verification-status', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const verifiedBenefits = [
+      '✅ Blue verification badge',
+      '✅ Higher trust score',
+      '✅ Priority in search results',
+      '✅ Access to verified-only feed',
+      '✅ Increased visibility',
+      '✅ Less likely to be flagged as spam'
+    ];
+
+    const premiumBenefits = [
+      '💎 Gold premium badge',
+      '💎 See who viewed your profile',
+      '💎 No advertisements',
+      '💎 Custom themes & colors',
+      '💎 Unlimited storage',
+      '💎 Advanced analytics',
+      '💎 Priority support',
+      '💎 Early access to features',
+      '💎 Download videos',
+      '💎 Control read receipts',
+      '💎 Ghost mode (browse invisibly)'
+    ];
+
+    res.json({
+      success: true,
+      data: {
+        isVerified: user.isVerified,
+        verifiedAt: user.verifiedAt,
+        verificationMethod: user.verificationMethod,
+        isPremium: user.isPremium,
+        premiumTier: user.premiumTier,
+        premiumFeatures: user.premiumFeatures,
+        premiumExpiresAt: user.premiumExpiresAt,
+        verifiedBenefits,
+        premiumBenefits
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting verification status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error getting status',
       error: error.message
     });
   }

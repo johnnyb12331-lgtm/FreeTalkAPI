@@ -103,8 +103,47 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded files
-app.use('/uploads', express.static('uploads'));
+// Serve uploaded files with proper headers for downloads
+app.use('/uploads', (req, res, next) => {
+  // Set headers to allow downloads and proper content type
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  
+  // For video files, set proper content type and allow range requests
+  if (req.path.match(/\.(mp4|webm|avi|mov|mpeg)$/i)) {
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    // Don't force download in browser, but allow it
+    // res.setHeader('Content-Disposition', 'inline');
+  }
+  // For audio files, set proper content type and allow range requests
+  if (req.path.match(/\.(mp3|m4a|aac|ogg|wav)$/i)) {
+    // Basic mapping for common audio types
+    if (req.path.toLowerCase().endsWith('.mp3')) {
+      res.setHeader('Content-Type', 'audio/mpeg');
+    } else if (req.path.toLowerCase().endsWith('.m4a')) {
+      res.setHeader('Content-Type', 'audio/mp4');
+    } else if (req.path.toLowerCase().endsWith('.aac')) {
+      res.setHeader('Content-Type', 'audio/aac');
+    } else if (req.path.toLowerCase().endsWith('.ogg')) {
+      res.setHeader('Content-Type', 'audio/ogg');
+    } else if (req.path.toLowerCase().endsWith('.wav')) {
+      res.setHeader('Content-Type', 'audio/wav');
+    }
+    res.setHeader('Accept-Ranges', 'bytes');
+  }
+  
+  next();
+}, express.static('uploads', {
+  // Enable directory listing in development
+  index: false,
+  // Set cache control
+  setHeaders: (res, path) => {
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day cache
+  }
+}));
 
 // Connect to MongoDB
 connectDB();
@@ -434,6 +473,8 @@ app.use('/api/stories', require('./routes/stories'));
 app.use('/api/calls', require('./routes/calls'));
 app.use('/api/pokes', require('./routes/pokes'));
 app.use('/api/videos', require('./routes/videos'));
+app.use('/api/music', require('./routes/music'));
+app.use('/api/payment', require('./routes/payment'));
 app.use('/api/admin', require('./routes/admin'));
 
 // Health check endpoint

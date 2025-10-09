@@ -1,10 +1,22 @@
 # Admin Management Scripts
 
-Convenient scripts to manage admin users in your FreeTalk application.
+Convenient scripts to manage admin users, premium subscriptions, and verification in your FreeTalk application.
 
 ## Prerequisites
 
 Make sure you're in the `FreeTalkAPI` directory and your MongoDB server is running.
+
+## 🆕 Status Management Scripts
+
+### Migrate Verified Users
+Migrates users who received free verification before Premium/Verified separation:
+```bash
+# Dry run (preview changes)
+node scripts/migrate-verified-users.js --dry-run
+
+# Actually perform migration
+node scripts/migrate-verified-users.js
+```
 
 ## Available Scripts
 

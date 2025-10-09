@@ -296,4 +296,23 @@ postSchema.methods.addComment = function(userId, content) {
   return this.save();
 };
 
+// ==================== INDEXES FOR PERFORMANCE ====================
+// Index for fetching posts by author (most common query)
+postSchema.index({ author: 1, createdAt: -1 });
+
+// Index for visibility and author queries (feed queries)
+postSchema.index({ visibility: 1, author: 1, createdAt: -1 });
+
+// Index for searching posts by content
+postSchema.index({ content: 'text' });
+
+// Index for finding reshared posts
+postSchema.index({ isReshare: 1, originalPost: 1 });
+
+// Compound index for efficient pagination and sorting
+postSchema.index({ createdAt: -1, _id: -1 });
+
+// Index for finding posts with specific media types
+postSchema.index({ mediaType: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Post', postSchema);

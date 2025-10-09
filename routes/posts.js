@@ -4,11 +4,21 @@ const Post = require('../models/Post');
 const Notification = require('../models/Notification');
 const { authenticateToken } = require('../middleware/auth');
 const upload = require('../config/multer');
+const { 
+  createContentLimiter, 
+  generalLimiter, 
+  searchLimiter, 
+  reactionLimiter,
+  strictLimiter 
+} = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(authenticateToken);
+
+// Apply general rate limiting to all post routes
+router.use(generalLimiter);
 
 // Validation rules
 const createPostValidation = [
@@ -135,6 +145,184 @@ router.get('/search', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to search posts'
+    });
+  }
+});
+
+// @route   GET /api/posts/top
+// @desc    Get top posts from user's followers by engagement
+// @access  Private
+router.get('/top', async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    // Get blocked user relationships
+    const Block = require('../models/Block');
+    const blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+
+    // Get current user with following list
+    const User = require('../models/User');
+    const currentUser = await User.findById(req.user._id).select('following');
+    
+    // Get posts from users the current user follows
+    const followingIds = currentUser.following || [];
+
+    if (followingIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No top posts available',
+        data: {
+          posts: [],
+          count: 0
+        }
+      });
+    }
+
+    // Aggregate posts with engagement score calculation
+    const posts = await Post.aggregate([
+      {
+        $match: {
+          visibility: 'public',
+          author: { 
+            $in: followingIds,
+            $nin: blockedUserIds
+          }
+        }
+      },
+      {
+        $addFields: {
+          likeCount: { $size: { $ifNull: ['$reactions', []] } },
+          commentCount: { $size: { $ifNull: ['$comments', []] } },
+          // Engagement score: likes * 2 + comments * 3
+          engagementScore: {
+            $add: [
+              { $multiply: [{ $size: { $ifNull: ['$reactions', []] } }, 2] },
+              { $multiply: [{ $size: { $ifNull: ['$comments', []] } }, 3] }
+            ]
+          }
+        }
+      },
+      {
+        $match: {
+          engagementScore: { $gt: 0 } // Only include posts with engagement
+        }
+      },
+      {
+        $sort: { engagementScore: -1 }
+      },
+      {
+        $limit: parseInt(limit)
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'author',
+          foreignField: '_id',
+          as: 'author'
+        }
+      },
+      {
+        $unwind: '$author'
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'taggedUsers',
+          foreignField: '_id',
+          as: 'taggedUsers'
+        }
+      },
+      {
+        $lookup: {
+          from: 'posts',
+          localField: 'originalPost',
+          foreignField: '_id',
+          as: 'originalPost'
+        }
+      },
+      {
+        $unwind: {
+          path: '$originalPost',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'originalPost.author',
+          foreignField: '_id',
+          as: 'originalPost.author'
+        }
+      },
+      {
+        $unwind: {
+          path: '$originalPost.author',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $project: {
+          content: 1,
+          author: {
+            _id: 1,
+            name: 1,
+            email: 1,
+            avatar: 1,
+            isPremium: 1,
+            premiumFeatures: 1,
+            isVerified: 1
+          },
+          images: 1,
+          videos: 1,
+          mediaType: 1,
+          reactions: 1,
+          comments: 1,
+          isReshare: 1,
+          reshareCaption: 1,
+          taggedUsers: {
+            _id: 1,
+            name: 1,
+            email: 1,
+            avatar: 1
+          },
+          originalPost: {
+            _id: 1,
+            content: 1,
+            author: {
+              _id: 1,
+              name: 1,
+              email: 1,
+              avatar: 1
+            },
+            images: 1,
+            videos: 1,
+            mediaType: 1,
+            reactions: 1,
+            comments: 1,
+            createdAt: 1
+          },
+          createdAt: 1,
+          likeCount: 1,
+          commentCount: 1,
+          engagementScore: 1
+        }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: 'Top posts retrieved successfully',
+      data: {
+        posts,
+        count: posts.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching top posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch top posts'
     });
   }
 });
@@ -379,7 +567,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/posts
 // @desc    Create a new post with text, images, and/or videos
 // @access  Private
-router.post('/', upload.array('media', 10), async (req, res) => {
+router.post('/', createContentLimiter, upload.array('media', 10), async (req, res) => {
   try {
     console.log('📝 Creating post with body:', req.body);
     console.log('📝 Files received:', req.files?.length || 0);

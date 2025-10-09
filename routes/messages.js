@@ -6,6 +6,10 @@ const upload = require('../config/multer');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
+const { messageLimiter, generalLimiter, searchLimiter } = require('../middleware/rateLimiter');
+
+// Apply general rate limiting to all message routes
+router.use(generalLimiter);
 
 // @route   GET /api/messages/conversations
 // @desc    Get all conversations for the current user
@@ -363,6 +367,13 @@ router.post(
       }
       // Handle media file if uploaded
       else if (req.file) {
+        console.log('🎤 Processing uploaded file:');
+        console.log('   Filename:', req.file.filename);
+        console.log('   Original:', req.file.originalname);
+        console.log('   Mimetype:', req.file.mimetype);
+        console.log('   Size:', req.file.size);
+        console.log('   Duration from body:', req.body.duration);
+        
         const mediaUrl = `/uploads/${req.file.filename}`;
         messageData.mediaUrl = mediaUrl;
         messageData.fileName = req.file.originalname;
@@ -371,15 +382,41 @@ router.post(
         // Determine media type based on mimetype
         if (req.file.mimetype.startsWith('image/')) {
           messageData.type = 'image';
+          console.log('✅ Set type to: image');
         } else if (req.file.mimetype.startsWith('video/')) {
           messageData.type = 'video';
           // For videos, you could generate a thumbnail here
           // For now, we'll use the video itself as thumbnail
           messageData.thumbnail = mediaUrl;
+          console.log('✅ Set type to: video');
+        } else if (req.file.mimetype.startsWith('audio/')) {
+          messageData.type = 'voice';
+          console.log('✅ Set type to: voice');
+          // Add duration if provided by client
+          if (req.body.duration) {
+            messageData.duration = parseFloat(req.body.duration);
+            console.log('   Duration parsed:', messageData.duration);
+          }
+          // Add waveform data if provided by client
+          if (req.body.waveformData) {
+            try {
+              messageData.waveformData = JSON.parse(req.body.waveformData);
+              console.log('   Waveform data parsed:', messageData.waveformData.length, 'points');
+            } catch (e) {
+              console.error('Failed to parse waveform data:', e);
+            }
+          }
         } else {
           // Document type (PDF, DOC, etc.)
           messageData.type = 'document';
+          console.log('✅ Set type to: document');
         }
+        
+        console.log('🎤 Final messageData:', {
+          type: messageData.type,
+          duration: messageData.duration,
+          hasWaveform: !!messageData.waveformData
+        });
       }
       
       // Add replyTo if provided
@@ -447,7 +484,7 @@ router.post(
         : gifUrl
         ? 'Sent a GIF'
         : req.file 
-        ? `Sent a ${messageData.type}` 
+        ? (messageData.type === 'voice' ? 'Sent a voice message' : `Sent a ${messageData.type}`)
         : (content ? content.substring(0, 100) : '');
       
       console.log(`🔔 ===== CREATING NOTIFICATION =====`);
@@ -501,6 +538,10 @@ router.post(
           mediaUrl: message.mediaUrl,
           thumbnail: message.thumbnail,
           gifUrl: message.gifUrl,
+          duration: message.duration, // Voice message duration
+          waveformData: message.waveformData, // Voice message waveform
+          fileName: message.fileName,
+          fileSize: message.fileSize,
           isGroup: isGroupMessage,
           groupName: isGroupMessage ? conversation.groupName : null,
           replyTo: message.replyTo ? {
@@ -660,7 +701,8 @@ router.post(
       console.error('Send message error:', error);
       res.status(500).json({
         success: false,
-        message: 'Failed to send message'
+        message: 'Failed to send message',
+        error: error.message
       });
     }
   }

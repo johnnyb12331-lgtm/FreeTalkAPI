@@ -191,4 +191,20 @@ conversationSchema.methods.incrementUnreadForAll = function(senderId) {
   return this.save();
 };
 
+// ==================== INDEXES FOR PERFORMANCE ====================
+// Primary index for finding user conversations
+conversationSchema.index({ participants: 1, lastMessageAt: -1 });
+
+// Index for finding conversations by last message time
+conversationSchema.index({ lastMessageAt: -1 });
+
+// Index for group conversations
+conversationSchema.index({ isGroup: 1, lastMessageAt: -1 });
+
+// Index for archived conversations
+conversationSchema.index({ archivedBy: 1 });
+
+// Compound index for finding specific one-on-one conversation
+conversationSchema.index({ participants: 1, isGroup: 1 });
+
 module.exports = mongoose.model('Conversation', conversationSchema);

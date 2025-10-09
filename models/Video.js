@@ -82,6 +82,60 @@ const videoSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
+  // Audio track information for videos with music/sounds
+  audioTrack: {
+    url: {
+      type: String,
+      default: null
+    },
+    title: {
+      type: String,
+      trim: true,
+      maxlength: 200
+    },
+    artist: {
+      type: String,
+      trim: true,
+      maxlength: 200
+    },
+    source: {
+      type: String,
+      enum: ['user', 'pixabay', 'freemusicarchive', 'original', 'uploaded'],
+      default: 'original'
+    },
+    license: {
+      type: String,
+      trim: true,
+      maxlength: 500
+    },
+    externalId: {
+      type: String, // ID from external source (Pixabay, etc.)
+      trim: true
+    },
+    musicTrackId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MusicTrack'
+    }
+  },
+  // Audio settings for video playback
+  originalAudio: {
+    type: Boolean,
+    default: true // Whether original video audio is enabled
+  },
+  audioStartTime: {
+    type: Number, // Start time of audio track in seconds
+    default: 0
+  },
+  audioDuration: {
+    type: Number, // Duration of audio to play in seconds
+    default: null
+  },
+  audioVolume: {
+    type: Number, // Volume level 0-100
+    default: 100,
+    min: 0,
+    max: 100
+  },
   isDeleted: {
     type: Boolean,
     default: false
@@ -95,6 +149,8 @@ videoSchema.index({ createdAt: -1 });
 videoSchema.index({ author: 1, createdAt: -1 });
 videoSchema.index({ hashtags: 1 });
 videoSchema.index({ 'likes.user': 1 });
+videoSchema.index({ 'audioTrack.musicTrackId': 1 }); // For finding videos by sound
+videoSchema.index({ 'audioTrack.title': 'text', 'audioTrack.artist': 'text' }); // Text search for audio
 
 // Virtual for view count
 videoSchema.virtual('viewCount').get(function() {

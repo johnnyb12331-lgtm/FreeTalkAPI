@@ -32,6 +32,8 @@ const fileFilter = (req, file, cb) => {
   const imageTypes = /jpeg|jpg|png|gif|webp|bmp|jpe/i;
   // Allowed video types
   const videoTypes = /mp4|avi|mov|wmv|flv|mkv|webm/i;
+  // Allowed audio types
+  const audioTypes = /mp3|wav|ogg|aac|m4a|flac/i;
   // Allowed document types
   const documentTypes = /pdf|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|csv|zip|rar|7z/i;
   
@@ -52,6 +54,12 @@ const fileFilter = (req, file, cb) => {
     return cb(null, true);
   }
 
+  // Check if file is audio (check extension OR mimetype)
+  if (mimetype.startsWith('audio/') || audioTypes.test(extname)) {
+    console.log('✅ Audio file accepted');
+    return cb(null, true);
+  }
+
   // Check if file is document (check extension OR mimetype)
   if (mimetype.includes('application/') || mimetype.includes('text/') || documentTypes.test(extname)) {
     console.log('✅ Document file accepted');
@@ -59,7 +67,7 @@ const fileFilter = (req, file, cb) => {
   }
 
   console.log('❌ File rejected - not an allowed file type');
-  cb(new Error('Only image, video, and document files are allowed!'));
+  cb(new Error('Only image, video, audio, and document files are allowed!'));
 };
 
 // Configure multer
