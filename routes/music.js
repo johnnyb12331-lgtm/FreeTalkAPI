@@ -132,13 +132,13 @@ const BUILT_IN_TRACKS = [
   }
 ];
 
-// All routes require authentication
-router.use(authenticateToken);
+// Note: Stream endpoint is public for web player compatibility
+// Other routes require authentication
 
 // @route   GET /api/music/built-in
 // @desc    Get built-in music tracks 
 // @access  Private
-router.get('/built-in', async (req, res) => {
+router.get('/built-in', authenticateToken, async (req, res) => {
   try {
     const { category, mood, search } = req.query;
     let tracks = [...BUILT_IN_TRACKS];
@@ -189,7 +189,7 @@ router.get('/built-in', async (req, res) => {
 // @route   GET /api/music/built-in/categories
 // @desc    Get available categories from built-in tracks
 // @access  Private
-router.get('/built-in/categories', async (req, res) => {
+router.get('/built-in/categories', authenticateToken, async (req, res) => {
   try {
     const categories = [...new Set(BUILT_IN_TRACKS.map(track => track.category))].sort();
 
@@ -210,7 +210,7 @@ router.get('/built-in/categories', async (req, res) => {
 // @route   GET /api/music/built-in/moods
 // @desc    Get available moods from built-in tracks
 // @access  Private
-router.get('/built-in/moods', async (req, res) => {
+router.get('/built-in/moods', authenticateToken, async (req, res) => {
   try {
     const moods = [...new Set(BUILT_IN_TRACKS.map(track => track.mood))].sort();
 
@@ -231,7 +231,7 @@ router.get('/built-in/moods', async (req, res) => {
 // @route   GET /api/music/built-in/:trackId
 // @desc    Get specific built-in track by ID
 // @access  Private
-router.get('/built-in/:trackId', async (req, res) => {
+router.get('/built-in/:trackId', authenticateToken, async (req, res) => {
   try {
     const { trackId } = req.params;
     const track = BUILT_IN_TRACKS.find(t => t.id === trackId);
@@ -260,7 +260,7 @@ router.get('/built-in/:trackId', async (req, res) => {
 // @route   GET /api/music/pixabay/search
 // @desc    Search Pixabay for music (live from API)
 // @access  Private
-router.get('/pixabay/search', async (req, res) => {
+router.get('/pixabay/search', authenticateToken, async (req, res) => {
   try {
     const { q = '', page = 1, limit = 20 } = req.query;
 
@@ -294,7 +294,7 @@ router.get('/pixabay/search', async (req, res) => {
 // @route   GET /api/music/pixabay/popular
 // @desc    Get popular music from Pixabay (live from API)
 // @access  Private
-router.get('/pixabay/popular', async (req, res) => {
+router.get('/pixabay/popular', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
 
@@ -327,7 +327,7 @@ router.get('/pixabay/popular', async (req, res) => {
 // @route   POST /api/music/pixabay/sync
 // @desc    Sync popular tracks from Pixabay to database (Admin)
 // @access  Private
-router.post('/pixabay/sync', async (req, res) => {
+router.post('/pixabay/sync', authenticateToken, async (req, res) => {
   try {
     const { count = 50 } = req.body;
 
@@ -373,8 +373,8 @@ const createMusicTrackValidation = [
 
 // @route   GET /api/music/trending
 // @desc    Get trending sounds/music
-// @access  Public
-router.get('/trending', async (req, res) => {
+// @access  Private
+router.get('/trending', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
 
@@ -426,7 +426,7 @@ router.get('/trending', async (req, res) => {
 // @route   GET /api/music/popular
 // @desc    Get popular sounds/music
 // @access  Private
-router.get('/popular', async (req, res) => {
+router.get('/popular', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 20, category } = req.query;
 
@@ -452,8 +452,8 @@ router.get('/popular', async (req, res) => {
 
 // @route   GET /api/music/my-sounds
 // @desc    Get user's uploaded sounds
-// @access  Private (but returns empty if not authenticated)
-router.get('/my-sounds', async (req, res) => {
+// @access  Private
+router.get('/my-sounds', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
 
@@ -522,7 +522,7 @@ router.get('/my-sounds', async (req, res) => {
 // @route   GET /api/music/search
 // @desc    Search for sounds/music
 // @access  Private
-router.get('/search', async (req, res) => {
+router.get('/search', authenticateToken, async (req, res) => {
   try {
     const { q, page = 1, limit = 20, category } = req.query;
 
@@ -557,7 +557,7 @@ router.get('/search', async (req, res) => {
 // @route   GET /api/music/categories
 // @desc    Get all available categories
 // @access  Private
-router.get('/categories', async (req, res) => {
+router.get('/categories', authenticateToken, async (req, res) => {
   try {
     const categories = [
       { id: 'trending', name: 'Trending', icon: '🔥' },
@@ -592,7 +592,7 @@ router.get('/categories', async (req, res) => {
 // @route   GET /api/music/:id
 // @desc    Get single music track by ID
 // @access  Private
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
     if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
       return res.status(400).json({
@@ -637,7 +637,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/music/upload
 // @desc    Upload a user-created sound/audio
 // @access  Private
-router.post('/upload', upload.single('audio'), createMusicTrackValidation, async (req, res) => {
+router.post('/upload', authenticateToken, upload.single('audio'), createMusicTrackValidation, async (req, res) => {
   try {
     // Check for validation errors
     const errors = validationResult(req);
@@ -726,7 +726,7 @@ router.post('/upload', upload.single('audio'), createMusicTrackValidation, async
 // @route   GET /api/music/:id/videos
 // @desc    Get videos using a specific sound
 // @access  Private
-router.get('/:id/videos', async (req, res) => {
+router.get('/:id/videos', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -770,7 +770,7 @@ router.get('/:id/videos', async (req, res) => {
 // @route   DELETE /api/music/:id
 // @desc    Delete a user's uploaded sound
 // @access  Private
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const track = await MusicTrack.findById(req.params.id);
 
