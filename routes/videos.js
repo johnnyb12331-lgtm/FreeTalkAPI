@@ -474,6 +474,7 @@ router.post('/', authenticateToken, upload.single('video'), createVideoValidatio
     let audioTrackData = null;
     if (musicTrackId || audioUrl) {
       audioTrackData = {};
+      console.log('🎵 Audio track detected:', { musicTrackId, audioUrl });
       
       if (musicTrackId) {
         audioTrackData.musicTrackId = musicTrackId;
@@ -502,6 +503,8 @@ router.post('/', authenticateToken, upload.single('video'), createVideoValidatio
         audioTrackData.license = audioLicense;
         audioTrackData.externalId = audioExternalId;
       }
+    } else {
+      console.log('🔇 No audio track selected - will use original video audio');
     }
 
     // Create new video document
@@ -513,7 +516,8 @@ router.post('/', authenticateToken, upload.single('video'), createVideoValidatio
       taggedUsers: parsedTaggedUsers,
       visibility,
       audioTrack: audioTrackData,
-      originalAudio: originalAudio === 'true' || originalAudio === true,
+      // If no audio track is selected, always use original audio
+      originalAudio: audioTrackData ? (originalAudio === 'true' || originalAudio === true) : true,
       audioStartTime: parseFloat(audioStartTime) || 0,
       audioDuration: audioDuration ? parseFloat(audioDuration) : null,
       audioVolume: parseInt(audioVolume) || 100
