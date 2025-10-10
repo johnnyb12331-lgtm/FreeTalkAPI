@@ -591,10 +591,22 @@ router.post('/', authenticateToken, upload.single('video'), createVideoValidatio
     console.error('❌ Error message:', error.message);
     console.error('❌ Error stack:', error.stack);
     
+    // Log request body for debugging
+    console.error('📋 Request body:', {
+      title: req.body.title,
+      hasFile: !!req.file,
+      audioTrack: req.body.musicTrackId || req.body.audioUrl,
+      originalAudio: req.body.originalAudio
+    });
+    
     res.status(500).json({
       success: false,
       message: 'Failed to upload video',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? {
+        name: error.name,
+        stack: error.stack
+      } : undefined
     });
   }
 });
