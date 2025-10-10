@@ -100,7 +100,7 @@ const videoSchema = new mongoose.Schema({
     },
     source: {
       type: String,
-      enum: ['user', 'pixabay', 'freemusicarchive', 'original', 'uploaded'],
+      enum: ['user', 'pixabay', 'freemusicarchive', 'original', 'uploaded', 'built-in'],
       default: 'original'
     },
     license: {
