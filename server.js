@@ -10,6 +10,9 @@ const connectDB = require('./config/db');
 
 const app = express();
 
+// Trust proxy - required for rate limiting behind nginx
+app.set('trust proxy', true);
+
 // Create server based on environment
 let server;
 const isProduction = process.env.NODE_ENV === 'production';
@@ -475,6 +478,8 @@ app.use('/api/pokes', require('./routes/pokes'));
 app.use('/api/videos', require('./routes/videos'));
 app.use('/api/music', require('./routes/music'));
 app.use('/api/payment', require('./routes/payment'));
+app.use('/api/photos', require('./routes/photos'));
+app.use('/api/iap', require('./routes/iap')); // In-App Purchase verification
 app.use('/api/admin', require('./routes/admin'));
 
 // Health check endpoint

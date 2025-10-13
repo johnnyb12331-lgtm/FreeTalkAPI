@@ -349,7 +349,7 @@ router.get('/user/:userId', optionalAuth, async (req, res) => {
 // @route   GET /api/videos/:id
 // @desc    Get single video by ID
 // @access  Private
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
     // Validate ObjectId format
     if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
@@ -900,7 +900,7 @@ router.post('/:id/comment', authenticateToken, commentValidation, async (req, re
 // @route   GET /api/videos/:id/comments
 // @desc    Get all comments for a video
 // @access  Private
-router.get('/:id/comments', async (req, res) => {
+router.get('/:id/comments', authenticateToken, async (req, res) => {
   try {
     const video = await Video.findById(req.params.id)
       .populate('comments.user', 'name email avatar isPremium premiumFeatures')
@@ -933,7 +933,7 @@ router.get('/:id/comments', async (req, res) => {
 // @route   DELETE /api/videos/:id
 // @desc    Delete a video (soft delete)
 // @access  Private
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const video = await Video.findById(req.params.id);
 
@@ -1072,6 +1072,87 @@ router.get('/:id/download', async (req, res) => {
         message: 'Failed to download video'
       });
     }
+  }
+});
+
+// @route   POST /api/videos/:id/report
+// @desc    Report a video
+// @access  Private
+router.post('/:id/report', authenticateToken, [
+  body('reason')
+    .notEmpty()
+    .withMessage('Report reason is required')
+    .isIn(['spam', 'harassment', 'hate_speech', 'violence', 'misinformation', 'inappropriate', 'inappropriate_content', 'fake_account', 'impersonation', 'other'])
+    .withMessage('Invalid report reason'),
+  body('details')
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('Details cannot exceed 500 characters')
+], async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const Report = require('../models/Report');
+
+    // Check if video exists
+    const video = await Video.findById(req.params.id);
+    if (!video || video.isDeleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Video not found'
+      });
+    }
+
+    // Check if user has already reported this video
+    const existingReport = await Report.findOne({
+      reporter: req.user._id,
+      reportedVideo: req.params.id,
+      reportType: 'video',
+      status: { $in: ['pending', 'reviewing'] }
+    });
+
+    if (existingReport) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already reported this video'
+      });
+    }
+
+    const { reason, details } = req.body;
+
+    // Create new report
+    const report = new Report({
+      reportType: 'video',
+      reporter: req.user._id,
+      reportedVideo: req.params.id,
+      reason,
+      details: details || ''
+    });
+
+    await report.save();
+
+    console.log(`🚨 Video ${req.params.id} reported by ${req.user.name} for ${reason}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Video reported successfully. We will review it shortly.',
+      data: { report }
+    });
+  } catch (error) {
+    console.error('Report video error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to report video'
+    });
   }
 });
 

@@ -26,6 +26,29 @@ const userSchema = new mongoose.Schema({
     minlength: [8, 'Password must be at least 8 characters long'],
     select: false // Don't include password in queries by default
   },
+  // Social login IDs (for Sign in with Apple, Google, Facebook)
+  appleId: {
+    type: String,
+    unique: true,
+    sparse: true, // Allow null values while enforcing uniqueness
+    index: true
+  },
+  googleId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true
+  },
+  facebookId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true
+  },
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
   avatar: {
     type: String,
     default: null
@@ -95,7 +118,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  // Moderation fields
+  isBot: {
+    type: Boolean,
+    default: false
+  },
   isSuspended: {
     type: Boolean,
     default: false
@@ -135,6 +161,15 @@ const userSchema = new mongoose.Schema({
   },
   refreshToken: {
     type: String,
+    select: false
+  },
+  // Password reset fields
+  resetPasswordToken: {
+    type: String,
+    select: false
+  },
+  resetPasswordExpires: {
+    type: Date,
     select: false
   },
   // Premium subscription fields

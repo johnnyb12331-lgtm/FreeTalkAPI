@@ -74,15 +74,18 @@ router.get('/search', async (req, res) => {
     const User = require('../models/User');
     const currentUser = await User.findById(req.user._id).select('following');
     
-    // Users can only search posts from people they follow
+    // Users can search posts from people they follow
     const followingIds = currentUser.following || [];
+    
+    // Use only followed users
+    const allAllowedAuthorIds = followingIds;
 
     // Search posts by content (case-insensitive)
     const posts = await Post.find({
       visibility: 'public',
       content: { $regex: searchQuery, $options: 'i' },
       author: { 
-        $in: followingIds, // Only search posts from users the current user follows
+        $in: allAllowedAuthorIds, // Search posts from users the current user follows
         $nin: blockedUserIds // Exclude posts from blocked users
       }
     })
@@ -166,8 +169,11 @@ router.get('/top', async (req, res) => {
     
     // Get posts from users the current user follows
     const followingIds = currentUser.following || [];
+    
+    // Use only followed users
+    const allAllowedAuthorIds = followingIds;
 
-    if (followingIds.length === 0) {
+    if (allAllowedAuthorIds.length === 0) {
       return res.status(200).json({
         success: true,
         message: 'No top posts available',
@@ -184,7 +190,7 @@ router.get('/top', async (req, res) => {
         $match: {
           visibility: 'public',
           author: { 
-            $in: followingIds,
+            $in: allAllowedAuthorIds,
             $nin: blockedUserIds
           }
         }
@@ -347,13 +353,20 @@ router.get('/', async (req, res) => {
     const followingIds = currentUser.following || [];
     // Add current user's ID to see their own posts in the feed
     const allowedAuthorIds = [...followingIds, req.user._id];
+    
+    console.log(`📊 Feed for user ${req.user._id}:`);
+    console.log(`   - Following: ${followingIds.length} users`);
+    console.log(`   - Blocked: ${blockedUserIds.length} users`);
+    
+    // Use only followed users and current user
+    const allAllowedAuthorIds = allowedAuthorIds;
 
     // Use lean() for better performance and select only needed fields
     // Don't populate full comments on list view - only load when needed
     const posts = await Post.find({ 
       visibility: 'public',
       author: { 
-        $in: allowedAuthorIds, // Show posts from users the current user follows + own posts
+        $in: allAllowedAuthorIds, // Show posts from users the current user follows + own posts
         $nin: blockedUserIds // Exclude posts from blocked users
       }
     })
@@ -385,7 +398,7 @@ router.get('/', async (req, res) => {
     const total = await Post.countDocuments({ 
       visibility: 'public',
       author: { 
-        $in: allowedAuthorIds,
+        $in: allAllowedAuthorIds,
         $nin: blockedUserIds
       }
     });

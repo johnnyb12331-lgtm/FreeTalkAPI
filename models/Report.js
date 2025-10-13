@@ -4,7 +4,7 @@ const reportSchema = new mongoose.Schema({
   // What's being reported
   reportType: {
     type: String,
-    enum: ['user', 'post'],
+    enum: ['user', 'post', 'video'],
     required: true
   },
   
@@ -29,6 +29,14 @@ const reportSchema = new mongoose.Schema({
     ref: 'Post',
     required: function() {
       return this.reportType === 'post';
+    }
+  },
+  
+  reportedVideo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Video',
+    required: function() {
+      return this.reportType === 'video';
     }
   },
   
@@ -91,12 +99,16 @@ const reportSchema = new mongoose.Schema({
 reportSchema.index({ reporter: 1, createdAt: -1 });
 reportSchema.index({ reportedUser: 1, createdAt: -1 });
 reportSchema.index({ reportedPost: 1, createdAt: -1 });
+reportSchema.index({ reportedVideo: 1, createdAt: -1 });
 reportSchema.index({ status: 1, createdAt: -1 });
 reportSchema.index({ reportType: 1, status: 1 });
 
 // Virtual for getting the reported item
 reportSchema.virtual('reportedItem').get(function() {
-  return this.reportType === 'user' ? this.reportedUser : this.reportedPost;
+  if (this.reportType === 'user') return this.reportedUser;
+  if (this.reportType === 'post') return this.reportedPost;
+  if (this.reportType === 'video') return this.reportedVideo;
+  return null;
 });
 
 // Method to mark as reviewed

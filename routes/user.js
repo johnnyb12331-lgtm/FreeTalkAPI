@@ -1213,6 +1213,10 @@ router.get('/:userId', authenticateToken, async (req, res) => {
     // Get user's post count
     const postsCount = await Post.countDocuments({ author: user._id });
     
+    // Get user's photo count
+    const Photo = require('../models/Photo');
+    const photosCount = await Photo.countDocuments({ owner: user._id });
+    
     // Get followers and following counts
     const followersCount = user.followers ? user.followers.length : 0;
     const followingCount = user.following ? user.following.length : 0;
@@ -1232,6 +1236,7 @@ router.get('/:userId', authenticateToken, async (req, res) => {
           bio: user.bio,
           createdAt: user.createdAt,
           postsCount,
+          photosCount,
           followersCount,
           followingCount,
           isFollowing,

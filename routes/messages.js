@@ -6,6 +6,7 @@ const upload = require('../config/multer');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { messageLimiter, generalLimiter, searchLimiter } = require('../middleware/rateLimiter');
 
 // Apply general rate limiting to all message routes
@@ -1978,6 +1979,158 @@ router.get('/:conversationId/export', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to export conversation'
+    });
+  }
+});
+
+// @route   POST /api/messages/ai-chat
+// @desc    Send message to AI bot and get AI response
+// @access  Private
+router.post('/ai-chat', auth, async (req, res) => {
+  try {
+    const { botId, message, conversationId } = req.body;
+
+    if (!botId || !message) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bot ID and message are required'
+      });
+    }
+
+    // Verify bot exists and is actually a bot
+    const bot = await User.findById(botId);
+    if (!bot || !bot.isBot) {
+      return res.status(404).json({
+        success: false,
+        message: 'AI bot not found'
+      });
+    }
+
+    // Get or create conversation with the bot
+    let conversation;
+    if (conversationId) {
+      conversation = await Conversation.findById(conversationId);
+      if (!conversation) {
+        return res.status(404).json({
+          success: false,
+          message: 'Conversation not found'
+        });
+      }
+    } else {
+      conversation = await Conversation.findOrCreate(req.user._id, botId);
+    }
+
+    // Save user message
+    const userMessage = await Message.create({
+      conversation: conversation._id,
+      sender: req.user._id,
+      recipient: botId,
+      content: message,
+      type: 'text'
+    });
+
+    // Generate AI response using the existing AI content generator
+    const aiGenerator = require('../services/aiContentGenerator');
+    const prompt = `You are ${bot.name}, ${bot.bio}. A user just said: "${message}". Respond naturally and helpfully as this AI assistant. Keep your response conversational and under 500 characters.`;
+
+    let aiResponse;
+    try {
+      aiResponse = await aiGenerator.generateText(prompt);
+      if (!aiResponse || aiResponse.trim() === '') {
+        aiResponse = "I'm sorry, I'm having trouble generating a response right now. Please try again later!";
+      }
+    } catch (error) {
+      console.error('AI generation error:', error);
+      aiResponse = "I'm experiencing some technical difficulties. Please try again in a moment!";
+    }
+
+    // Save AI response message
+    const botMessage = await Message.create({
+      conversation: conversation._id,
+      sender: botId,
+      recipient: req.user._id,
+      content: aiResponse,
+      type: 'text'
+    });
+
+    // Update conversation
+    conversation.lastMessage = botMessage._id;
+    conversation.lastMessageAt = botMessage.createdAt;
+    conversation.deletedBy = conversation.deletedBy.filter(
+      id => id.toString() !== req.user._id.toString() && id.toString() !== botId.toString()
+    );
+    await conversation.incrementUnread(botId); // Bot doesn't read messages
+    await conversation.save();
+
+    // Populate messages
+    await userMessage.populate('sender', 'name email avatar');
+    await userMessage.populate('recipient', 'name email avatar');
+    await botMessage.populate('sender', 'name email avatar');
+    await botMessage.populate('recipient', 'name email avatar');
+
+    // Emit socket events
+    const io = req.app.get('io');
+    if (io) {
+      const userMessageData = {
+        _id: userMessage._id,
+        conversation: conversation._id,
+        sender: {
+          _id: req.user._id,
+          name: req.user.name,
+          avatar: req.user.avatar
+        },
+        recipient: botId,
+        content: userMessage.content,
+        type: 'text',
+        isRead: false,
+        createdAt: userMessage.createdAt
+      };
+
+      const botMessageData = {
+        _id: botMessage._id,
+        conversation: conversation._id,
+        sender: {
+          _id: botId,
+          name: bot.name,
+          avatar: bot.avatar
+        },
+        recipient: req.user._id,
+        content: botMessage.content,
+        type: 'text',
+        isRead: false,
+        createdAt: botMessage.createdAt
+      };
+
+      // Send both messages to user
+      io.to(`user:${req.user._id}`).emit('message:new', { message: userMessageData });
+      io.to(`user:${req.user._id}`).emit('message:new', { message: botMessageData });
+    }
+
+    res.json({
+      success: true,
+      message: 'AI chat completed',
+      data: {
+        userMessage,
+        botMessage,
+        conversation: {
+          _id: conversation._id,
+          otherUser: {
+            _id: bot._id,
+            name: bot.name,
+            avatar: bot.avatar,
+            isBot: bot.isBot
+          },
+          lastMessage: botMessage,
+          lastMessageAt: conversation.lastMessageAt,
+          unreadCount: conversation.getUnreadCount(req.user._id)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('AI chat error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process AI chat'
     });
   }
 });
