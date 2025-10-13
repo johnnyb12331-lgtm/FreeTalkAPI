@@ -688,6 +688,26 @@ router.post(
           });
           console.log(`💬 ===== NOTIFICATION EMITTED =====`);
           console.log(`💬 =====================================`);
+
+          // If recipient is not connected via socket, send FCM push notification
+          if (!recipientSockets || recipientSockets.size === 0) {
+            console.log(`📱 Recipient not connected via socket, sending FCM notification`);
+            const FCMService = require('../services/fcmService');
+            await FCMService.sendNotificationToUser(
+              recipient,
+              `New message from ${req.user.name}`,
+              message.content || 'You have a new message',
+              {
+                conversationId: conversation._id.toString(),
+                messageId: message._id.toString(),
+                senderId: req.user._id.toString(),
+                senderName: req.user.name,
+                type: 'message'
+              }
+            );
+          } else {
+            console.log(`📱 Recipient is connected via socket, skipping FCM`);
+          }
         }
 
         console.log(`✅ Message sent successfully with notifications and unread count updated`);

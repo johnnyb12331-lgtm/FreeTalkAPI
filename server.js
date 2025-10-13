@@ -151,6 +151,10 @@ app.use('/uploads', (req, res, next) => {
 // Connect to MongoDB
 connectDB();
 
+// Initialize FCM Service
+const FCMService = require('./services/fcmService');
+FCMService.initialize();
+
 // Socket.IO connection handling
 // Map to store userId -> Set of socketIds (to support multiple connections per user)
 const userSockets = new Map();

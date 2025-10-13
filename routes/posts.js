@@ -1959,6 +1959,28 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
           });
           
           console.log(`✅ Comment notification emitted successfully with unread count: ${unreadCount}`);
+          
+          // If recipient is not connected via socket, send FCM push notification
+          const userSockets = req.app.get('userSockets');
+          const recipientSockets = userSockets?.get(post.author._id.toString());
+          if (!recipientSockets || recipientSockets.size === 0) {
+            console.log(`📱 Post author not connected via socket, sending FCM notification for comment`);
+            const FCMService = require('../services/fcmService');
+            await FCMService.sendNotificationToUser(
+              post.author._id,
+              `New comment from ${req.user.name}`,
+              gif ? '🎞️ Sent a GIF comment' : (content ? content.substring(0, 100) : 'Commented on your post'),
+              {
+                postId: post._id.toString(),
+                commentId: newComment._id.toString(),
+                senderId: req.user._id.toString(),
+                senderName: req.user.name,
+                type: 'comment'
+              }
+            );
+          } else {
+            console.log(`📱 Post author is connected via socket, skipping FCM for comment`);
+          }
         } else {
           console.log(`❌ Socket.IO instance not found`);
         }
@@ -2007,6 +2029,28 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
             });
             
             console.log(`✅ Mention notification sent to user ${mentionedUserId}, unread count: ${unreadCount}`);
+            
+            // If mentioned user is not connected via socket, send FCM push notification
+            const userSockets = req.app.get('userSockets');
+            const mentionedUserSockets = userSockets?.get(mentionedUserId.toString());
+            if (!mentionedUserSockets || mentionedUserSockets.size === 0) {
+              console.log(`📱 Mentioned user not connected via socket, sending FCM notification for mention in comment`);
+              const FCMService = require('../services/fcmService');
+              await FCMService.sendNotificationToUser(
+                mentionedUserId,
+                `Mention from ${req.user.name}`,
+                `${req.user.name} mentioned you in a comment`,
+                {
+                  postId: post._id.toString(),
+                  commentId: newComment._id.toString(),
+                  senderId: req.user._id.toString(),
+                  senderName: req.user.name,
+                  type: 'mention'
+                }
+              );
+            } else {
+              console.log(`📱 Mentioned user is connected via socket, skipping FCM for mention`);
+            }
           }
         }
       }
@@ -2179,6 +2223,29 @@ router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res
           });
           
           console.log(`✅ Reply notification emitted to room: ${roomName}, unread count: ${unreadCount}`);
+          
+          // If recipient is not connected via socket, send FCM push notification
+          const userSockets = req.app.get('userSockets');
+          const recipientSockets = userSockets?.get(commentUserId.toString());
+          if (!recipientSockets || recipientSockets.size === 0) {
+            console.log(`📱 Comment author not connected via socket, sending FCM notification for reply`);
+            const FCMService = require('../services/fcmService');
+            await FCMService.sendNotificationToUser(
+              commentUserId,
+              `New reply from ${req.user.name}`,
+              content.substring(0, 100),
+              {
+                postId: post._id.toString(),
+                commentId: req.params.commentId,
+                replyId: newReply._id.toString(),
+                senderId: req.user._id.toString(),
+                senderName: req.user.name,
+                type: 'reply'
+              }
+            );
+          } else {
+            console.log(`📱 Comment author is connected via socket, skipping FCM for reply`);
+          }
         }
       } catch (notificationError) {
         console.error('Failed to create reply notification:', notificationError);
@@ -2226,6 +2293,29 @@ router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res
               });
               
               console.log(`✅ Reply mention notification sent to user ${mentionedUserId}, unread count: ${unreadCount}`);
+              
+              // If mentioned user is not connected via socket, send FCM push notification
+              const userSockets = req.app.get('userSockets');
+              const mentionedUserSockets = userSockets?.get(mentionedUserId.toString());
+              if (!mentionedUserSockets || mentionedUserSockets.size === 0) {
+                console.log(`📱 Mentioned user not connected via socket, sending FCM notification for mention in reply`);
+                const FCMService = require('../services/fcmService');
+                await FCMService.sendNotificationToUser(
+                  mentionedUserId,
+                  `Mention from ${req.user.name}`,
+                  `${req.user.name} mentioned you in a reply`,
+                  {
+                    postId: post._id.toString(),
+                    commentId: req.params.commentId,
+                    replyId: newReply._id.toString(),
+                    senderId: req.user._id.toString(),
+                    senderName: req.user.name,
+                    type: 'mention'
+                  }
+                );
+              } else {
+                console.log(`📱 Mentioned user is connected via socket, skipping FCM for mention in reply`);
+              }
             }
           } catch (notificationError) {
             console.error('Failed to create mention notification in reply:', notificationError);
@@ -2351,6 +2441,29 @@ router.post('/:id/comments/:commentId/react', async (req, res) => {
         });
         
         console.log(`✅ Comment reaction notification sent, unread count: ${unreadCount}`);
+        
+        // If recipient is not connected via socket, send FCM push notification
+        const userSockets = req.app.get('userSockets');
+        const recipientSockets = userSockets?.get(commentAuthorId.toString());
+        if (!recipientSockets || recipientSockets.size === 0) {
+          console.log(`📱 Comment author not connected via socket, sending FCM notification for reaction`);
+          const FCMService = require('../services/fcmService');
+          await FCMService.sendNotificationToUser(
+            commentAuthorId,
+            `New reaction from ${req.user.name}`,
+            `${req.user.name} reacted ${reactionType} to your comment${comment.gif ? ' with GIF' : ''}`,
+            {
+              postId: post._id.toString(),
+              commentId: req.params.commentId,
+              senderId: req.user._id.toString(),
+              senderName: req.user.name,
+              reactionType: reactionType,
+              type: 'reaction'
+            }
+          );
+        } else {
+          console.log(`📱 Comment author is connected via socket, skipping FCM for reaction`);
+        }
         
         // Also emit comment reaction event for UI updates
         io.emit('comment:reacted', {
@@ -2506,6 +2619,72 @@ router.post('/:id/comments/:commentId/replies/:replyId/react', async (req, res) 
     }
 
     await post.save();
+    await post.populate('comments.replies.user', 'name email avatar');
+
+    // Create notification for reply author (if not reacting to own reply)
+    const replyAuthorId = reply.user._id || reply.user;
+    if (replyAuthorId.toString() !== req.user._id.toString()) {
+      console.log(`💙 Creating reaction notification for reply author ${replyAuthorId}`);
+      
+      const notification = await Notification.create({
+        recipient: replyAuthorId,
+        sender: req.user._id,
+        type: 'reaction',
+        post: post._id,
+        reactionType: reactionType,
+        message: `${req.user.name} reacted ${reactionType} to your reply`
+      });
+
+      await notification.populate('sender', 'name email avatar');
+      await notification.populate('post', 'content images videos');
+      
+      // Emit real-time notification
+      const io = req.app.get('io');
+      if (io) {
+        const roomName = `user:${replyAuthorId}`;
+        console.log(`📢 Emitting reply reaction notification to room: ${roomName}`);
+        io.to(roomName).emit('notification:new', {
+          notification: notification.toObject()
+        });
+        
+        // Get updated unread count
+        const unreadCount = await Notification.countDocuments({
+          recipient: replyAuthorId,
+          isRead: false
+        });
+        
+        // Emit unread count update
+        io.to(roomName).emit('notification:unread-count', {
+          unreadCount
+        });
+        
+        console.log(`✅ Reply reaction notification sent, unread count: ${unreadCount}`);
+        
+        // If recipient is not connected via socket, send FCM push notification
+        const userSockets = req.app.get('userSockets');
+        const recipientSockets = userSockets?.get(replyAuthorId.toString());
+        if (!recipientSockets || recipientSockets.size === 0) {
+          console.log(`📱 Reply author not connected via socket, sending FCM notification for reaction`);
+          const FCMService = require('../services/fcmService');
+          await FCMService.sendNotificationToUser(
+            replyAuthorId,
+            `New reaction from ${req.user.name}`,
+            `${req.user.name} reacted ${reactionType} to your reply`,
+            {
+              postId: post._id.toString(),
+              commentId: req.params.commentId,
+              replyId: req.params.replyId,
+              senderId: req.user._id.toString(),
+              senderName: req.user.name,
+              reactionType: reactionType,
+              type: 'reaction'
+            }
+          );
+        } else {
+          console.log(`📱 Reply author is connected via socket, skipping FCM for reaction`);
+        }
+      }
+    }
 
     // Emit Socket.IO event
     const io = req.app.get('io');

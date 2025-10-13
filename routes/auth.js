@@ -969,4 +969,41 @@ router.get('/verify-reset-token/:token', async (req, res) => {
   }
 });
 
+// @route   POST /api/auth/update-fcm-token
+// @desc    Update FCM token for push notifications
+// @access  Private
+router.post('/update-fcm-token', authenticateToken, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+
+    if (!fcmToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'FCM token is required'
+      });
+    }
+
+    const FCMService = require('../services/fcmService');
+    const success = await FCMService.updateUserToken(req.user._id, fcmToken);
+
+    if (success) {
+      res.status(200).json({
+        success: true,
+        message: 'FCM token updated successfully'
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update FCM token'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Update FCM token error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating FCM token.'
+    });
+  }
+});
+
 module.exports = router;
