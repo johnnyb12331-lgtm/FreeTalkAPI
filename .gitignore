@@ -11,6 +11,10 @@ yarn.lock
 .env.production
 .env.development
 
+# Firebase service account keys
+*-firebase-adminsdk-*.json
+reeltalk-*-firebase-adminsdk-*.json
+
 # Uploads (uncomment if you want to exclude uploaded files)
 # uploads/
 # !uploads/.gitkeep
