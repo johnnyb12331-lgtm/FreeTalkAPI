@@ -611,13 +611,37 @@ const banUserHandler = async (req, res) => {
     await user.save();
 
     // Send notification to user
-    await Notification.create({
-      recipient: userId,
-      type: 'moderation_action',
-      title: 'Account Banned',
-      message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
-      relatedUser: req.user.userId
-    });
+    try {
+      await Notification.create({
+        recipient: userId,
+        type: 'moderation_action',
+        title: 'Account Banned',
+        message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
+        relatedUser: req.user.userId
+      });
+
+      // Emit real-time notification via socket.io
+      const io = req.app.get('io');
+      if (io) {
+        const roomName = `user:${userId}`;
+        io.to(roomName).emit('account_banned', {
+          message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
+          reason: user.suspensionReason,
+          timestamp: new Date()
+        });
+
+        io.to(roomName).emit('notification', {
+          type: 'moderation_action',
+          title: 'Account Banned',
+          message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
+          createdAt: new Date()
+        });
+        
+        console.log(`🔔 Ban notification emitted to user ${userId}`);
+      }
+    } catch (notifError) {
+      console.error('Error sending ban notification:', notifError);
+    }
 
     console.log(`✅ User ${userId} banned successfully`);
 
@@ -749,18 +773,38 @@ router.delete('/users/:userId', authenticateToken, requireAdmin, async (req, res
         message: reason || 'Your account has been deleted by an administrator. If you believe this was done in error, please contact support.',
       });
 
-      console.log(`📬 Notification sent to user before account deletion`);
+      console.log(`📬 Notification created in database for user ${userId}`);
 
       // Emit real-time notification via socket.io
       const io = req.app.get('io');
       if (io) {
-        io.to(`user:${userId}`).emit('account_deleted', {
+        const roomName = `user:${userId}`;
+        const deletionData = {
           message: reason || 'Your account has been deleted by an administrator.',
-          timestamp: new Date()
+          timestamp: new Date(),
+          reason: reason
+        };
+        
+        console.log(`🔌 Attempting to emit account_deleted to room: ${roomName}`);
+        console.log(`📊 Sockets in room:`, io.sockets.adapter.rooms.get(roomName)?.size || 0);
+        
+        // Emit to user's room
+        io.to(roomName).emit('account_deleted', deletionData);
+        
+        // Also emit a notification event (backup)
+        io.to(roomName).emit('notification', {
+          type: 'account_deleted',
+          title: 'Account Deleted',
+          message: deletionData.message,
+          createdAt: new Date()
         });
+        
+        console.log(`✅ Account deletion events emitted to user ${userId}`);
+      } else {
+        console.log(`⚠️  Socket.io not available - user won't receive real-time notification`);
       }
     } catch (notifError) {
-      console.error('Error sending deletion notification:', notifError);
+      console.error('❌ Error sending deletion notification:', notifError);
       // Continue with deletion even if notification fails
     }
 
