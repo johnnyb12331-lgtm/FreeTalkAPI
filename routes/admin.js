@@ -999,4 +999,110 @@ router.delete('/posts/:postId', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+// @route   PATCH /api/admin/users/:userId/status
+// @desc    Update user premium and verified status (admin only)
+// @access  Private (Admin only)
+router.patch('/users/:userId/status', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { isPremium, isVerified } = req.body;
+
+    // Validate input
+    if (isPremium === undefined && isVerified === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one status field (isPremium or isVerified) must be provided'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Can't modify admin users
+    if (user.isAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot modify admin user status'
+      });
+    }
+
+    // Prepare update object
+    const updateData = {};
+    if (isPremium !== undefined) {
+      updateData.isPremium = isPremium;
+    }
+    if (isVerified !== undefined) {
+      updateData.isVerified = isVerified;
+    }
+
+    // Update user
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updateData },
+      { new: true }
+    ).select('name email isPremium isVerified');
+
+    console.log(`✨ Admin ${req.user.name} updated user ${updatedUser.name} status:`);
+    if (isPremium !== undefined) console.log(`   - Premium: ${isPremium}`);
+    if (isVerified !== undefined) console.log(`   - Verified: ${isVerified}`);
+
+    // Send notification to user
+    try {
+      let notificationMessage = '';
+      if (isPremium && isVerified) {
+        notificationMessage = '🎉 Congratulations! Your account is now Premium and Verified!';
+      } else if (isPremium) {
+        notificationMessage = '🎉 Congratulations! Your account is now Premium!';
+      } else if (isVerified) {
+        notificationMessage = '✅ Your account has been verified!';
+      } else if (isPremium === false && isVerified === false) {
+        notificationMessage = 'Your Premium and Verified status has been updated.';
+      } else if (isPremium === false) {
+        notificationMessage = 'Your Premium status has been removed.';
+      } else if (isVerified === false) {
+        notificationMessage = 'Your Verified status has been updated.';
+      }
+
+      if (notificationMessage) {
+        await Notification.create({
+          recipient: userId,
+          sender: req.user._id,
+          type: 'account_update',
+          message: notificationMessage,
+        });
+
+        // Emit real-time notification
+        const io = req.app.get('io');
+        if (io) {
+          io.to(`user:${userId}`).emit('notification', {
+            type: 'account_update',
+            message: notificationMessage,
+          });
+        }
+      }
+    } catch (notifError) {
+      console.error('Error sending status update notification:', notifError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'User status updated successfully',
+      data: {
+        user: updatedUser,
+      },
+    });
+  } catch (error) {
+    console.error('Update user status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user status'
+    });
+  }
+});
+
 module.exports = router;
