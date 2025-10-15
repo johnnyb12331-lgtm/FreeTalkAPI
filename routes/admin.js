@@ -445,9 +445,9 @@ router.delete('/reports/:id', authenticateToken, requireAdmin, async (req, res) 
 const suspendUserHandler = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reason } = req.body;
+    const { reason, duration } = req.body;
 
-    console.log(`⚠️ Admin ${req.user.userId} suspending user ${userId}`);
+    console.log(`⚠️ Admin ${req.user.userId} suspending user ${userId} for ${duration || 'permanent'} days`);
 
     const user = await User.findById(userId);
     if (!user) {
@@ -465,23 +465,69 @@ const suspendUserHandler = async (req, res) => {
       });
     }
 
+    // Calculate suspension end date
+    let suspensionEndDate = null;
+    let durationText = 'permanently';
+    
+    if (duration && duration > 0) {
+      suspensionEndDate = new Date();
+      suspensionEndDate.setDate(suspensionEndDate.getDate() + duration);
+      
+      if (duration === 1) {
+        durationText = 'for 1 day';
+      } else {
+        durationText = `for ${duration} days`;
+      }
+    }
+
     // Update user suspension status
     user.isSuspended = true;
     user.suspensionReason = reason || 'Account suspended by administrator';
     user.suspendedAt = new Date();
     user.suspendedBy = req.user.userId;
+    user.suspensionEndDate = suspensionEndDate;
+    user.suspensionDuration = duration || null;
     await user.save();
 
-    // Send notification to user
-    await Notification.create({
-      recipient: userId,
-      type: 'moderation_action',
-      title: 'Account Suspended',
-      message: `Your account has been suspended. Reason: ${user.suspensionReason}`,
-      relatedUser: req.user.userId
-    });
+    // Create notification message
+    const notificationMessage = duration 
+      ? `Your account has been suspended ${durationText}. Reason: ${user.suspensionReason}`
+      : `Your account has been permanently suspended. Reason: ${user.suspensionReason}`;
 
-    console.log(`✅ User ${userId} suspended successfully`);
+    // Send notification to user
+    try {
+      await Notification.create({
+        recipient: userId,
+        sender: req.user.userId,
+        type: 'moderation_action',
+        message: notificationMessage
+      });
+
+      // Emit real-time notification via socket.io
+      const io = req.app.get('io');
+      if (io) {
+        const roomName = `user:${userId}`;
+        io.to(roomName).emit('account_suspended', {
+          message: notificationMessage,
+          reason: user.suspensionReason,
+          duration: duration,
+          suspensionEndDate: suspensionEndDate,
+          timestamp: new Date()
+        });
+
+        io.to(roomName).emit('notification', {
+          type: 'moderation_action',
+          message: notificationMessage,
+          createdAt: new Date()
+        });
+        
+        console.log(`🔔 Suspension notification emitted to user ${userId}`);
+      }
+    } catch (notifError) {
+      console.error('Error sending suspension notification:', notifError);
+    }
+
+    console.log(`✅ User ${userId} suspended successfully ${durationText}`);
 
     res.status(200).json({
       success: true,
@@ -490,7 +536,9 @@ const suspendUserHandler = async (req, res) => {
         userId: user._id,
         isSuspended: user.isSuspended,
         suspensionReason: user.suspensionReason,
-        suspendedAt: user.suspendedAt
+        suspendedAt: user.suspendedAt,
+        suspensionEndDate: suspensionEndDate,
+        suspensionDuration: duration
       }
     });
   } catch (error) {
@@ -612,12 +660,13 @@ const banUserHandler = async (req, res) => {
 
     // Send notification to user
     try {
+      const banMessage = `Your account has been permanently banned. Reason: ${user.suspensionReason}`;
+      
       await Notification.create({
         recipient: userId,
+        sender: req.user.userId,
         type: 'moderation_action',
-        title: 'Account Banned',
-        message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
-        relatedUser: req.user.userId
+        message: banMessage
       });
 
       // Emit real-time notification via socket.io
@@ -625,15 +674,14 @@ const banUserHandler = async (req, res) => {
       if (io) {
         const roomName = `user:${userId}`;
         io.to(roomName).emit('account_banned', {
-          message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
+          message: banMessage,
           reason: user.suspensionReason,
           timestamp: new Date()
         });
 
         io.to(roomName).emit('notification', {
           type: 'moderation_action',
-          title: 'Account Banned',
-          message: `Your account has been permanently banned. Reason: ${user.suspensionReason}`,
+          message: banMessage,
           createdAt: new Date()
         });
         
@@ -738,6 +786,75 @@ const unbanUserHandler = async (req, res) => {
 router.post('/users/:userId/unban', authenticateToken, requireAdmin, unbanUserHandler);
 router.put('/users/:userId/unban', authenticateToken, requireAdmin, unbanUserHandler);
 
+// @route   GET /api/admin/users/:userId/posts
+// @desc    Get all posts by a specific user (admin only, no following restrictions)
+// @access  Private (Admin only)
+// NOTE: This route MUST come BEFORE /users/:userId to avoid route matching conflicts
+router.get('/users/:userId/posts', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Verify user exists
+    const user = await User.findById(req.params.userId).select('name email');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Get posts by the user
+    const posts = await Post.find({ author: req.params.userId })
+      .populate('author', 'name email avatar isPremium isVerified')
+      .populate({
+        path: 'comments.user',
+        select: 'name email avatar'
+      })
+      .populate({
+        path: 'originalPost',
+        select: 'content author images videos mediaType createdAt',
+        populate: {
+          path: 'author',
+          select: 'name email avatar'
+        }
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    const total = await Post.countDocuments({ author: req.params.userId });
+
+    console.log(`📊 Admin ${req.user.name} viewing posts for user ${user.name} (${user.email})`);
+
+    res.status(200).json({
+      success: true,
+      message: 'User posts retrieved successfully',
+      data: {
+        user: {
+          _id: user._id,
+          name: user.name,
+          email: user.email
+        },
+        posts,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get user posts (admin) error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve user posts'
+    });
+  }
+});
+
 // @route   DELETE /api/admin/users/:userId
 // @desc    Delete a user account (Admin action)
 // @access  Private (Admin only)
@@ -828,6 +945,56 @@ router.delete('/users/:userId', authenticateToken, requireAdmin, async (req, res
     res.status(500).json({
       success: false,
       message: 'Failed to delete user account'
+    });
+  }
+});
+
+// @route   DELETE /api/admin/posts/:postId
+// @desc    Delete a post (admin only)
+// @access  Private (Admin only)
+router.delete('/posts/:postId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.postId);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found'
+      });
+    }
+
+    // Get post author info for logging
+    const author = await User.findById(post.author).select('name email');
+    
+    await Post.findByIdAndDelete(req.params.postId);
+
+    // Emit socket event for real-time update
+    const io = req.app.get('io');
+    if (io) {
+      // Emit to followers of the post author
+      const postAuthor = await User.findById(post.author).select('followers');
+      const followerIds = postAuthor?.followers || [];
+      
+      followerIds.forEach(followerId => {
+        io.to(`user:${followerId}`).emit('post:deleted', {
+          postId: req.params.postId
+        });
+      });
+      
+      console.log(`📡 Emitted post:deleted to ${followerIds.length} followers`);
+    }
+
+    console.log(`🗑️ Admin ${req.user.name} deleted post ${req.params.postId} by ${author?.name || 'Unknown'}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Post deleted successfully'
+    });
+  } catch (error) {
+    console.error('Admin delete post error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete post'
     });
   }
 });
