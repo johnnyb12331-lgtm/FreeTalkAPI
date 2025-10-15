@@ -439,10 +439,10 @@ router.delete('/reports/:id', authenticateToken, requireAdmin, async (req, res) 
   }
 });
 
-// @route   POST /api/admin/users/:userId/suspend
+// @route   POST/PUT /api/admin/users/:userId/suspend
 // @desc    Suspend a user account
 // @access  Private (Admin only)
-router.post('/users/:userId/suspend', authenticateToken, requireAdmin, async (req, res) => {
+const suspendUserHandler = async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason } = req.body;
@@ -500,12 +500,14 @@ router.post('/users/:userId/suspend', authenticateToken, requireAdmin, async (re
       message: 'Failed to suspend user'
     });
   }
-});
+};
+router.post('/users/:userId/suspend', authenticateToken, requireAdmin, suspendUserHandler);
+router.put('/users/:userId/suspend', authenticateToken, requireAdmin, suspendUserHandler);
 
-// @route   POST /api/admin/users/:userId/unsuspend
+// @route   POST/PUT /api/admin/users/:userId/unsuspend
 // @desc    Unsuspend a user account
 // @access  Private (Admin only)
-router.post('/users/:userId/unsuspend', authenticateToken, requireAdmin, async (req, res) => {
+const unsuspendUserHandler = async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason } = req.body;
@@ -569,12 +571,14 @@ router.post('/users/:userId/unsuspend', authenticateToken, requireAdmin, async (
       message: 'Failed to unsuspend user'
     });
   }
-});
+};
+router.post('/users/:userId/unsuspend', authenticateToken, requireAdmin, unsuspendUserHandler);
+router.put('/users/:userId/unsuspend', authenticateToken, requireAdmin, unsuspendUserHandler);
 
-// @route   POST /api/admin/users/:userId/ban
+// @route   POST/PUT /api/admin/users/:userId/ban
 // @desc    Ban a user account permanently
 // @access  Private (Admin only)
-router.post('/users/:userId/ban', authenticateToken, requireAdmin, async (req, res) => {
+const banUserHandler = async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason } = req.body;
@@ -633,12 +637,14 @@ router.post('/users/:userId/ban', authenticateToken, requireAdmin, async (req, r
       message: 'Failed to ban user'
     });
   }
-});
+};
+router.post('/users/:userId/ban', authenticateToken, requireAdmin, banUserHandler);
+router.put('/users/:userId/ban', authenticateToken, requireAdmin, banUserHandler);
 
-// @route   POST /api/admin/users/:userId/unban
+// @route   POST/PUT /api/admin/users/:userId/unban
 // @desc    Unban a user account
 // @access  Private (Admin only)
-router.post('/users/:userId/unban', authenticateToken, requireAdmin, async (req, res) => {
+const unbanUserHandler = async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason } = req.body;
@@ -702,6 +708,82 @@ router.post('/users/:userId/unban', authenticateToken, requireAdmin, async (req,
     res.status(500).json({
       success: false,
       message: 'Failed to unban user'
+    });
+  }
+};
+router.post('/users/:userId/unban', authenticateToken, requireAdmin, unbanUserHandler);
+router.put('/users/:userId/unban', authenticateToken, requireAdmin, unbanUserHandler);
+
+// @route   DELETE /api/admin/users/:userId
+// @desc    Delete a user account (Admin action)
+// @access  Private (Admin only)
+router.delete('/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason } = req.body;
+
+    console.log(`🗑️ Admin ${req.user.name} deleting user ${userId}`);
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Can't delete admin users
+    if (user.isAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete admin users'
+      });
+    }
+
+    // Send notification to user before deletion
+    try {
+      await Notification.create({
+        recipient: userId,
+        sender: req.user._id,
+        type: 'account_deleted',
+        message: reason || 'Your account has been deleted by an administrator. If you believe this was done in error, please contact support.',
+      });
+
+      console.log(`📬 Notification sent to user before account deletion`);
+
+      // Emit real-time notification via socket.io
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user:${userId}`).emit('account_deleted', {
+          message: reason || 'Your account has been deleted by an administrator.',
+          timestamp: new Date()
+        });
+      }
+    } catch (notifError) {
+      console.error('Error sending deletion notification:', notifError);
+      // Continue with deletion even if notification fails
+    }
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    // Optional: Delete user's related content (posts, messages, etc.)
+    // Uncomment these if you want to cascade delete
+    // await Post.deleteMany({ author: userId });
+    // await Message.deleteMany({ $or: [{ sender: userId }, { receiver: userId }] });
+    // await Notification.deleteMany({ $or: [{ recipient: userId }, { sender: userId }] });
+
+    console.log(`✅ User ${userId} deleted successfully by ${req.user.name}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'User account deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete user account'
     });
   }
 });
