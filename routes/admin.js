@@ -1054,35 +1054,63 @@ router.patch('/users/:userId/status', authenticateToken, requireAdmin, async (re
     // Send notification to user
     try {
       let notificationMessage = '';
+      let notificationTitle = '';
+      
       if (isPremium && isVerified) {
+        notificationTitle = 'Account Status Updated';
         notificationMessage = '🎉 Congratulations! Your account is now Premium and Verified!';
       } else if (isPremium) {
+        notificationTitle = 'Premium Granted';
         notificationMessage = '🎉 Congratulations! Your account is now Premium!';
       } else if (isVerified) {
+        notificationTitle = 'Account Verified';
         notificationMessage = '✅ Your account has been verified!';
       } else if (isPremium === false && isVerified === false) {
+        notificationTitle = 'Account Status Updated';
         notificationMessage = 'Your Premium and Verified status has been updated.';
       } else if (isPremium === false) {
+        notificationTitle = 'Premium Removed';
         notificationMessage = 'Your Premium status has been removed.';
       } else if (isVerified === false) {
+        notificationTitle = 'Verification Updated';
         notificationMessage = 'Your Verified status has been updated.';
       }
 
       if (notificationMessage) {
-        await Notification.create({
+        const notification = await Notification.create({
           recipient: userId,
           sender: req.user._id,
           type: 'account_update',
           message: notificationMessage,
         });
 
+        console.log(`📬 Status update notification created for user ${userId}`);
+
         // Emit real-time notification
         const io = req.app.get('io');
         if (io) {
-          io.to(`user:${userId}`).emit('notification', {
-            type: 'account_update',
-            message: notificationMessage,
+          const roomName = `user:${userId}`;
+          
+          // Emit profile update so they can refresh their data
+          io.to(roomName).emit('profile:updated', {
+            userId: userId,
+            isPremium: updatedUser.isPremium,
+            isVerified: updatedUser.isVerified,
+            message: 'Your account status has been updated',
           });
+          
+          // Also emit notification
+          io.to(roomName).emit('notification', {
+            _id: notification._id,
+            type: 'account_update',
+            title: notificationTitle,
+            message: notificationMessage,
+            createdAt: notification.createdAt,
+            read: false,
+          });
+          
+          console.log(`🔌 Emitted profile:updated and notification to room: ${roomName}`);
+          console.log(`📊 Sockets in room:`, io.sockets.adapter.rooms.get(roomName)?.size || 0);
         }
       }
     } catch (notifError) {
