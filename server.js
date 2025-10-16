@@ -154,6 +154,10 @@ connectDB();
 // Initialize FCM Service
 const FCMService = require('./services/fcmService');
 FCMService.initialize();
+// Reminder service: birthdays and event reminders
+const ReminderService = require('./services/reminderService');
+// Memory service: On This Day reminders and memory collections
+const MemoryService = require('./services/memoryService');
 
 // Socket.IO connection handling
 // Map to store userId -> Set of socketIds (to support multiple connections per user)
@@ -397,6 +401,50 @@ io.on('connection', (socket) => {
     console.log(`📨 Forwarding answer for call ${callId}`);
     io.to(`user:${peerId}`).emit('call:answer', { callId, answer });
   });
+
+  // ===== Event realtime rooms =====
+  socket.on('events:subscribe', (data) => {
+    const { eventId } = data || {};
+    if (!eventId) return;
+    socket.join(`event:${eventId}`);
+    socket.emit('events:subscribed', { eventId });
+  });
+  socket.on('events:unsubscribe', (data) => {
+    const { eventId } = data || {};
+    if (!eventId) return;
+    socket.leave(`event:${eventId}`);
+    socket.emit('events:unsubscribed', { eventId });
+  });
+
+  // ===== Club realtime rooms =====
+  socket.on('club:subscribe', (data) => {
+    const { clubId } = data || {};
+    if (!clubId) return;
+    socket.join(`club:${clubId}`);
+    socket.emit('club:subscribed', { clubId });
+    console.log(`🏛️ User ${socket.userId} subscribed to club: ${clubId}`);
+  });
+  
+  socket.on('club:unsubscribe', (data) => {
+    const { clubId } = data || {};
+    if (!clubId) return;
+    socket.leave(`club:${clubId}`);
+    socket.emit('club:unsubscribed', { clubId });
+    console.log(`🏛️ User ${socket.userId} unsubscribed from club: ${clubId}`);
+  });
+
+  // Typing indicator for club discussions
+  socket.on('club:typing', (data) => {
+    const { clubId, userName } = data || {};
+    if (!clubId) return;
+    socket.to(`club:${clubId}`).emit('club:user-typing', { clubId, userId: socket.userId, userName });
+  });
+
+  socket.on('club:stop-typing', (data) => {
+    const { clubId } = data || {};
+    if (!clubId) return;
+    socket.to(`club:${clubId}`).emit('club:user-stop-typing', { clubId, userId: socket.userId });
+  });
   
   // WebRTC Signaling: ICE Candidate
   socket.on('call:ice-candidate', (data) => {
@@ -464,6 +512,230 @@ io.on('connection', (socket) => {
       }
     }
   });
+
+  // ===== Memory Events =====
+  
+  // Request memories for today
+  socket.on('memory:request', async (data) => {
+    try {
+      const userId = socket.userId;
+      if (!userId) {
+        socket.emit('memory:error', { message: 'Not authenticated' });
+        return;
+      }
+
+      const Memory = require('./models/Memory');
+      const memories = await Memory.getTodaysMemories(userId, {
+        includeViewed: data?.includeViewed || false,
+        limit: data?.limit || 20
+      });
+
+      socket.emit('memory:response', {
+        count: memories.length,
+        memories
+      });
+    } catch (error) {
+      console.error('Error fetching memories:', error);
+      socket.emit('memory:error', { message: 'Failed to fetch memories' });
+    }
+  });
+
+  // Mark memory as viewed
+  socket.on('memory:view', async (data) => {
+    try {
+      const userId = socket.userId;
+      if (!userId) return;
+
+      const { memoryId } = data;
+      const Memory = require('./models/Memory');
+      const memory = await Memory.findOne({ _id: memoryId, user: userId });
+
+      if (memory) {
+        await memory.markAsViewed();
+        socket.emit('memory:viewed', { memoryId, viewed: true });
+      }
+    } catch (error) {
+      console.error('Error marking memory as viewed:', error);
+    }
+  });
+
+  // Share memory
+  socket.on('memory:share', async (data) => {
+    try {
+      const userId = socket.userId;
+      if (!userId) return;
+
+      const { memoryId } = data;
+      const Memory = require('./models/Memory');
+      const memory = await Memory.findOne({ _id: memoryId, user: userId });
+
+      if (memory) {
+        await memory.markAsShared();
+        socket.emit('memory:shared', { memoryId, shared: true });
+      }
+    } catch (error) {
+      console.error('Error sharing memory:', error);
+    }
+  });
+
+  // ===== Crisis Response Real-Time Handlers =====
+  
+  // Join a crisis response room to receive updates
+  socket.on('crisis:join', async (data) => {
+    try {
+      const { crisisId } = data;
+      socket.join(`crisis:${crisisId}`);
+      console.log(`🆘 User ${socket.userId} joined crisis room: crisis:${crisisId}`);
+      socket.emit('crisis:joined', { crisisId });
+    } catch (error) {
+      console.error('Error joining crisis room:', error);
+    }
+  });
+
+  // Leave a crisis response room
+  socket.on('crisis:leave', async (data) => {
+    try {
+      const { crisisId } = data;
+      socket.leave(`crisis:${crisisId}`);
+      console.log(`🆘 User ${socket.userId} left crisis room: crisis:${crisisId}`);
+    } catch (error) {
+      console.error('Error leaving crisis room:', error);
+    }
+  });
+
+  // Send a real-time update to a crisis
+  socket.on('crisis:send-update', async (data) => {
+    try {
+      const userId = socket.userId;
+      if (!userId) return;
+
+      const { crisisId, message } = data;
+      const CrisisResponse = require('./models/CrisisResponse');
+      const User = require('./models/User');
+      
+      const crisis = await CrisisResponse.findById(crisisId);
+      if (!crisis) {
+        socket.emit('crisis:error', { message: 'Crisis not found' });
+        return;
+      }
+
+      // Add update to crisis
+      crisis.updates.push({
+        user: userId,
+        message,
+        timestamp: new Date()
+      });
+      await crisis.save();
+
+      const user = await User.findById(userId).select('name profilePicture');
+
+      // Broadcast update to all users in the crisis room
+      io.to(`crisis:${crisisId}`).emit('crisis:new-update', {
+        crisisId,
+        update: {
+          user: {
+            _id: userId,
+            name: user.name,
+            profilePicture: user.profilePicture
+          },
+          message,
+          timestamp: new Date()
+        }
+      });
+    } catch (error) {
+      console.error('Error sending crisis update:', error);
+      socket.emit('crisis:error', { message: 'Failed to send update' });
+    }
+  });
+
+  // Notify that someone is viewing the crisis (for awareness)
+  socket.on('crisis:viewing', async (data) => {
+    try {
+      const { crisisId } = data;
+      const User = require('./models/User');
+      const user = await User.findById(socket.userId).select('name');
+      
+      // Broadcast to crisis room that someone is viewing
+      socket.to(`crisis:${crisisId}`).emit('crisis:viewer', {
+        crisisId,
+        viewer: {
+          _id: socket.userId,
+          name: user?.name
+        }
+      });
+    } catch (error) {
+      console.error('Error broadcasting crisis viewer:', error);
+    }
+  });
+
+  // Request immediate help (emergency broadcast)
+  socket.on('crisis:emergency-broadcast', async (data) => {
+    try {
+      const userId = socket.userId;
+      if (!userId) return;
+
+      const { crisisId, message } = data;
+      const CrisisResponse = require('./models/CrisisResponse');
+      const User = require('./models/User');
+      
+      const crisis = await CrisisResponse.findById(crisisId)
+        .populate('user', 'name profilePicture');
+      
+      if (!crisis || crisis.user._id.toString() !== userId) {
+        socket.emit('crisis:error', { message: 'Unauthorized' });
+        return;
+      }
+
+      // Update crisis severity to critical
+      crisis.severity = 'critical';
+      await crisis.save();
+
+      // Broadcast emergency alert to all online users based on visibility
+      if (crisis.visibility === 'community') {
+        io.emit('crisis:emergency', {
+          crisisId: crisis._id,
+          type: crisis.crisisType,
+          severity: 'critical',
+          message: message || 'Emergency help needed!',
+          user: crisis.isAnonymous ? null : {
+            _id: crisis.user._id,
+            name: crisis.user.name,
+            profilePicture: crisis.user.profilePicture
+          },
+          location: crisis.location?.address
+        });
+      } else {
+        // Broadcast to friends only
+        const user = await User.findById(userId);
+        const friendIds = user.friends || [];
+        
+        friendIds.forEach(friendId => {
+          if (userSockets.has(friendId.toString())) {
+            const socketIds = userSockets.get(friendId.toString());
+            socketIds.forEach(socketId => {
+              io.to(socketId).emit('crisis:emergency', {
+                crisisId: crisis._id,
+                type: crisis.crisisType,
+                severity: 'critical',
+                message: message || 'Emergency help needed!',
+                user: crisis.isAnonymous ? null : {
+                  _id: crisis.user._id,
+                  name: crisis.user.name,
+                  profilePicture: crisis.user.profilePicture
+                },
+                location: crisis.location?.address
+              });
+            });
+          }
+        });
+      }
+
+      socket.emit('crisis:emergency-sent', { crisisId });
+    } catch (error) {
+      console.error('Error sending emergency broadcast:', error);
+      socket.emit('crisis:error', { message: 'Failed to send emergency alert' });
+    }
+  });
 });
 
 // Make io and userSockets available to routes
@@ -485,9 +757,13 @@ app.use('/api/payment', require('./routes/payment'));
 app.use('/api/photos', require('./routes/photos'));
 app.use('/api/iap', require('./routes/iap')); // In-App Purchase verification
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/events', require('./routes/events'));
+app.use('/api/memories', require('./routes/memories')); // Memories and On This Day feature
+app.use('/api/crisis', require('./routes/crisis')); // Crisis Response and Safety Checks
+app.use('/api/clubs', require('./routes/clubs')); // Clubs feature
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   const mongoose = require('mongoose');
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   
@@ -539,6 +815,24 @@ server.listen(PORT, () => {
     console.log(`🔗 Local endpoint: http://localhost:${PORT}`);
   } else {
     console.log(`🔗 API available at http://localhost:${PORT}`);
+  }
+
+  // Start reminder service after server is listening
+  try {
+    const reminderSvc = new ReminderService(io);
+    reminderSvc.start();
+    app.set('reminderService', reminderSvc);
+  } catch (e) {
+    console.error('❌ Failed to start ReminderService:', e.message);
+  }
+
+  // Start memory service after server is listening
+  try {
+    const memorySvc = new MemoryService(io);
+    memorySvc.start();
+    app.set('memoryService', memorySvc);
+  } catch (e) {
+    console.error('❌ Failed to start MemoryService:', e.message);
   }
 });
 

@@ -42,6 +42,7 @@ const discussionPostSchema = new mongoose.Schema({
     height: { type: Number, default: null },
     duration: { type: Number, default: null } // For videos (in seconds)
   }],
+  taggedMembers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Tagged club members
   isPinned: { type: Boolean, default: false },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   likesCount: { type: Number, default: 0 },
@@ -49,6 +50,8 @@ const discussionPostSchema = new mongoose.Schema({
   isDeleted: { type: Boolean, default: false },
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   deletedAt: { type: Date, default: null },
+  isEdited: { type: Boolean, default: false },
+  editedAt: { type: Date, default: null },
   // Poll specific fields
   pollOptions: [{
     text: { type: String, maxlength: 200 },
@@ -365,11 +368,13 @@ clubSchema.methods.addDiscussion = function(authorId, content, type = 'discussio
     type,
     content,
     media: media || [],
+    taggedMembers: [],
     isPinned: false,
     likes: [],
     likesCount: 0,
     commentsCount: 0,
     isDeleted: false,
+    isEdited: false,
     createdAt: new Date()
   };
   
@@ -387,6 +392,60 @@ clubSchema.methods.addDiscussion = function(authorId, content, type = 'discussio
   this.lastActivityAt = new Date();
   
   return this.discussions[this.discussions.length - 1];
+};
+
+// Update discussion post
+clubSchema.methods.updateDiscussion = function(discussionId, userId, updates) {
+  const discussion = this.discussions.id(discussionId);
+  if (!discussion || discussion.isDeleted) {
+    throw new Error('Discussion not found');
+  }
+  
+  // Check if user is author or moderator
+  const isAuthor = discussion.author.toString() === userId.toString();
+  const canModerate = this.canModerate(userId);
+  
+  if (!isAuthor && !canModerate) {
+    throw new Error('You do not have permission to edit this discussion');
+  }
+  
+  // Only author can edit content, media, and tags
+  // Moderators can only pin/unpin
+  if (isAuthor) {
+    if (updates.content !== undefined) {
+      discussion.content = updates.content;
+      discussion.isEdited = true;
+      discussion.editedAt = new Date();
+    }
+    
+    if (updates.media !== undefined) {
+      discussion.media = updates.media;
+      discussion.isEdited = true;
+      discussion.editedAt = new Date();
+    }
+    
+    if (updates.taggedMembers !== undefined) {
+      // Validate that all tagged users are members
+      const taggedMembers = updates.taggedMembers;
+      for (const taggedUserId of taggedMembers) {
+        if (!this.isMember(taggedUserId)) {
+          throw new Error(`User ${taggedUserId} is not a member of this club`);
+        }
+      }
+      discussion.taggedMembers = taggedMembers;
+      discussion.isEdited = true;
+      discussion.editedAt = new Date();
+    }
+  }
+  
+  // Moderators can pin/unpin
+  if (canModerate && updates.isPinned !== undefined) {
+    discussion.isPinned = updates.isPinned;
+  }
+  
+  this.lastActivityAt = new Date();
+  
+  return discussion;
 };
 
 // Add file

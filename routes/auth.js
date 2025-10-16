@@ -1,14 +1,11 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
-const { authLimiter, passwordResetLimiter } = require('../middleware/rateLimiter');
 const { OAuth2Client } = require('google-auth-library');
 const appleSignin = require('apple-signin-auth');
 const axios = require('axios');
-const { sendPasswordResetEmail, sendPasswordResetConfirmation } = require('../services/emailService');
 
 const router = express.Router();
 
@@ -29,9 +26,11 @@ const registerValidation = [
     .normalizeEmail()
     .withMessage('Please provide a valid email address'),
   
-  body('password')
-    .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters long')
+  body('pinCode')
+    .isLength({ min: 4, max: 4 })
+    .withMessage('PIN code must be exactly 4 digits')
+    .isNumeric()
+    .withMessage('PIN code must contain only numbers')
 ];
 
 const loginValidation = [
@@ -40,9 +39,19 @@ const loginValidation = [
     .normalizeEmail()
     .withMessage('Please provide a valid email address'),
   
+  body('pinCode')
+    .optional()
+    .custom((value) => {
+      if (value !== undefined && value !== null && value !== '') {
+        if (!/^\d{4}$/.test(value)) {
+          throw new Error('PIN code must be exactly 4 digits');
+        }
+      }
+      return true;
+    }),
+  
   body('password')
-    .notEmpty()
-    .withMessage('Password is required')
+    .optional()
 ];
 
 // Helper function to generate JWT tokens
@@ -81,7 +90,44 @@ router.post('/register', registerValidation, async (req, res) => {
       });
     }
 
-    const { name, email, password } = req.body;
+    const { name, email, pinCode, securityQuestion, securityAnswer } = req.body;
+
+    // Additional validation for pinCode
+    if (!pinCode || pinCode.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'PIN code is required'
+      });
+    }
+
+    if (!/^\d{4}$/.test(pinCode.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'PIN code must be exactly 4 digits'
+      });
+    }
+
+    // Validation for security question and answer
+    if (!securityQuestion || securityQuestion.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Security question is required'
+      });
+    }
+
+    if (!securityAnswer || securityAnswer.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Security answer is required'
+      });
+    }
+
+    if (securityAnswer.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Security answer must be at least 2 characters long'
+      });
+    }
 
     // Check if user already exists
     const existingUser = await User.findByEmail(email);
@@ -92,14 +138,27 @@ router.post('/register', registerValidation, async (req, res) => {
       });
     }
 
-    // Create new user
-    const user = new User({
+    // Create new user (no password - PIN only authentication)
+    const userData = {
       name: name.trim(),
-      email: email.toLowerCase(),
-      password
+      email: email.toLowerCase().trim(),
+      pinCode: pinCode.toString().trim(), // Ensure PIN is a string and trimmed
+      securityQuestion: securityQuestion.trim(),
+      securityAnswer: securityAnswer.trim()
+    };
+    
+    console.log('📝 Creating user with data:', {
+      name: userData.name,
+      email: userData.email,
+      pinCodeLength: userData.pinCode.length,
+      pinCodeValue: userData.pinCode,
+      pinCodeType: typeof userData.pinCode
     });
+    
+    const user = new User(userData);
 
     await user.save();
+    console.log('✅ New user registered:', user.email);
 
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(user._id);
@@ -121,10 +180,10 @@ router.post('/register', registerValidation, async (req, res) => {
       followingCount
     };
 
-    // Send response (password is automatically excluded by the schema)
+    // Send response (password and PIN are automatically excluded by the schema)
     res.status(201).json({
       success: true,
-      message: 'User registered successfully',
+      message: 'User registered successfully. You can now log in.',
       data: {
         user: completeUserProfile,
         accessToken,
@@ -133,10 +192,25 @@ router.post('/register', registerValidation, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('❌ Registration error:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    
+    // If it's a validation error, log the specific validation errors
+    if (error.name === 'ValidationError') {
+      console.error('Validation errors:', JSON.stringify(error.errors, null, 2));
+      Object.keys(error.errors).forEach(key => {
+        console.error(`  - ${key}: ${error.errors[key].message}`);
+      });
+    }
+    
+    console.error('Error stack:', error.stack);
+    
+    // Send more detailed error in response
     res.status(500).json({
       success: false,
-      message: 'Failed to register user'
+      message: error.message || 'Failed to register user',
+      errorDetails: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -146,6 +220,14 @@ router.post('/register', registerValidation, async (req, res) => {
 // @access  Public
 router.post('/login', loginValidation, async (req, res) => {
   try {
+    // Log the incoming request body for debugging
+    console.log('🔐 Login request received:', {
+      email: req.body.email,
+      hasPassword: !!req.body.password,
+      hasPinCode: !!req.body.pinCode,
+      bodyKeys: Object.keys(req.body)
+    });
+
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -157,32 +239,52 @@ router.post('/login', loginValidation, async (req, res) => {
       });
     }
 
-    const { email, password } = req.body;
+    const { email, password, pinCode } = req.body;
     console.log('🔐 Login attempt for email:', email);
 
-    // Find user and include password for comparison
-    const user = await User.findByEmail(email).select('+password');
+    // Find user and include password and pinCode for comparison
+    const user = await User.findByEmail(email).select('+password +pinCode');
     if (!user) {
       console.log('❌ User not found for email:', email);
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid email or credentials'
       });
     }
 
     console.log('✅ User found:', user.email);
 
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      console.log('❌ Invalid password for user:', email);
+    // Check PIN code (primary authentication method)
+    if (pinCode) {
+      const isPinValid = await user.comparePinCode(pinCode);
+      if (!isPinValid) {
+        console.log('❌ Invalid PIN code for user:', email);
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid email or PIN code'
+        });
+      }
+      console.log('✅ PIN code valid for user:', email);
+    } 
+    // Fallback to password for legacy users
+    else if (password && user.password) {
+      const isPasswordValid = await user.comparePassword(password);
+      if (!isPasswordValid) {
+        console.log('❌ Invalid password for user:', email);
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid email or password'
+        });
+      }
+      console.log('✅ Password valid for user:', email);
+    } 
+    // No valid credentials provided
+    else {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Please provide PIN code or password'
       });
     }
-
-    console.log('✅ Password valid for user:', email);
 
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(user._id);
@@ -755,216 +857,309 @@ router.post('/apple', [
   }
 });
 
-// @route   POST /api/auth/forgot-password
-// @desc    Send password reset email via Brevo
+// @route   POST /api/auth/reset-password-with-pin
+// @desc    Reset password using PIN code (no SMS/email required)
 // @access  Public
-router.post('/forgot-password', 
-  passwordResetLimiter,
-  [
-    body('email')
-      .isEmail()
-      .normalizeEmail()
-      .withMessage('Please provide a valid email address')
-  ],
-  async (req, res) => {
-    try {
-      // Check for validation errors
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please provide a valid email address',
-          errors: errors.array()
-        });
-      }
-
-      const { email } = req.body;
-
-      // Find user by email
-      const user = await User.findByEmail(email);
-      
-      // For security, always return success even if user doesn't exist
-      // This prevents email enumeration attacks
-      if (!user) {
-        console.log('⚠️  Password reset requested for non-existent email:', email);
-        return res.status(200).json({
-          success: true,
-          message: 'If an account with that email exists, we have sent a password reset link.'
-        });
-      }
-
-      // Check if user signed up with social auth (no password)
-      if (!user.password && (user.googleId || user.appleId || user.facebookId)) {
-        console.log('⚠️  Password reset requested for social auth user:', email);
-        return res.status(400).json({
-          success: false,
-          message: 'This account was created using social login (Google/Apple/Facebook). Please sign in using that method.'
-        });
-      }
-
-      // Generate reset token
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      
-      // Hash token before saving to database
-      const hashedToken = crypto
-        .createHash('sha256')
-        .update(resetToken)
-        .digest('hex');
-
-      // Save hashed token and expiration to database
-      user.resetPasswordToken = hashedToken;
-      user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
-      await user.save();
-
-      // Send email with plain token via Brevo
-      try {
-        await sendPasswordResetEmail(email, resetToken, user.name);
-        
-        console.log('✅ Password reset email sent via Brevo to:', email);
-        res.status(200).json({
-          success: true,
-          message: 'Password reset link has been sent to your email address.'
-        });
-      } catch (emailError) {
-        console.error('❌ Error sending password reset email via Brevo:', emailError);
-        
-        // Clear reset token if email fails
-        user.resetPasswordToken = undefined;
-        user.resetPasswordExpires = undefined;
-        await user.save();
-
-        return res.status(500).json({
-          success: false,
-          message: 'Error sending password reset email. Please try again later or contact support.'
-        });
-      }
-
-    } catch (error) {
-      console.error('❌ Forgot password error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'An error occurred. Please try again later.'
-      });
-    }
-  }
-);
-
-// @route   POST /api/auth/reset-password
-// @desc    Reset password using token
-// @access  Public
-router.post('/reset-password',
-  passwordResetLimiter,
-  [
-    body('token')
-      .notEmpty()
-      .withMessage('Reset token is required'),
-    body('newPassword')
-      .isLength({ min: 8 })
-      .withMessage('Password must be at least 8 characters long')
-      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-      .withMessage('Password must contain at least one uppercase letter, one lowercase letter, and one number')
-  ],
-  async (req, res) => {
-    try {
-      // Check for validation errors
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        const errorMessages = errors.array().map(err => err.msg);
-        return res.status(400).json({
-          success: false,
-          message: errorMessages.join('. '),
-          errors: errors.array()
-        });
-      }
-
-      const { token, newPassword } = req.body;
-
-      // Hash the token to compare with database
-      const hashedToken = crypto
-        .createHash('sha256')
-        .update(token)
-        .digest('hex');
-
-      // Find user with valid reset token
-      const user = await User.findOne({
-        resetPasswordToken: hashedToken,
-        resetPasswordExpires: { $gt: Date.now() }
-      }).select('+resetPasswordToken +resetPasswordExpires');
-
-      if (!user) {
-        return res.status(400).json({
-          success: false,
-          message: 'Password reset token is invalid or has expired. Please request a new one.'
-        });
-      }
-
-      // Update password
-      user.password = newPassword;
-      user.resetPasswordToken = undefined;
-      user.resetPasswordExpires = undefined;
-      await user.save();
-
-      console.log('✅ Password reset successful for user:', user.email);
-
-      // Send confirmation email via Brevo (non-blocking)
-      sendPasswordResetConfirmation(user.email, user.name).catch(err => {
-        console.error('⚠️  Failed to send confirmation email via Brevo:', err);
-      });
-
-      res.status(200).json({
-        success: true,
-        message: 'Your password has been successfully reset. You can now log in with your new password.'
-      });
-
-    } catch (error) {
-      console.error('❌ Reset password error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'An error occurred while resetting your password. Please try again.'
-      });
-    }
-  }
-);
-
-// @route   GET /api/auth/verify-reset-token/:token
-// @desc    Verify if reset token is valid
-// @access  Public
-router.get('/verify-reset-token/:token', async (req, res) => {
+router.post('/reset-password-with-pin', [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('pinCode')
+    .isLength({ min: 4, max: 4 })
+    .withMessage('PIN code must be exactly 4 digits')
+    .isNumeric()
+    .withMessage('PIN code must contain only numbers'),
+  body('newPassword')
+    .isLength({ min: 8 })
+    .withMessage('New password must be at least 8 characters long')
+], async (req, res) => {
   try {
-    const { token } = req.params;
-
-    // Hash the token to compare with database
-    const hashedToken = crypto
-      .createHash('sha256')
-      .update(token)
-      .digest('hex');
-
-    // Find user with valid reset token
-    const user = await User.findOne({
-      resetPasswordToken: hashedToken,
-      resetPasswordExpires: { $gt: Date.now() }
-    });
-
-    if (!user) {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Password reset token is invalid or has expired.'
+        message: 'Validation failed',
+        errors: errors.array()
       });
     }
+
+    const { email, pinCode, newPassword } = req.body;
+
+    // Find user by email and include PIN for verification
+    const user = await User.findByEmail(email).select('+pinCode +password');
+    
+    if (!user) {
+      // For security, don't reveal if user exists
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or PIN code'
+      });
+    }
+
+    // Verify PIN code
+    const isPinValid = await user.comparePinCode(pinCode);
+    
+    if (!isPinValid) {
+      console.log('❌ Invalid PIN code for password reset:', email);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or PIN code'
+      });
+    }
+
+    // Update password
+    user.password = newPassword; // Will be hashed by pre-save hook
+    await user.save();
+
+    console.log('✅ Password reset successful via PIN for user:', user.email);
 
     res.status(200).json({
       success: true,
-      message: 'Token is valid',
+      message: 'Password has been reset successfully. You can now log in with your new password.'
+    });
+
+  } catch (error) {
+    console.error('❌ Reset password with PIN error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred. Please try again later.'
+    });
+  }
+});
+
+// @route   POST /api/auth/reset-pin
+// @desc    Reset PIN code using old PIN verification
+// @access  Public
+router.post('/reset-pin', [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('oldPinCode')
+    .isLength({ min: 4, max: 4 })
+    .withMessage('Old PIN code must be exactly 4 digits')
+    .isNumeric()
+    .withMessage('Old PIN code must contain only numbers'),
+  body('newPinCode')
+    .isLength({ min: 4, max: 4 })
+    .withMessage('New PIN code must be exactly 4 digits')
+    .isNumeric()
+    .withMessage('New PIN code must contain only numbers')
+], async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email, oldPinCode, newPinCode } = req.body;
+
+    // Validate that old and new PINs are different
+    if (oldPinCode === newPinCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'New PIN must be different from the old PIN'
+      });
+    }
+
+    // Find user by email and include PIN for verification
+    const user = await User.findByEmail(email).select('+pinCode');
+    
+    if (!user) {
+      // For security, don't reveal if user exists
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or PIN code'
+      });
+    }
+
+    // Verify old PIN code
+    const isPinValid = await user.comparePinCode(oldPinCode);
+    
+    if (!isPinValid) {
+      console.log('❌ Invalid old PIN code for PIN reset:', email);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or old PIN code'
+      });
+    }
+
+    // Update PIN
+    user.pinCode = newPinCode; // Will be hashed by pre-save hook
+    await user.save();
+
+    console.log('✅ PIN reset successful for user:', user.email);
+
+    res.status(200).json({
+      success: true,
+      message: 'PIN has been reset successfully. You can now log in with your new PIN.'
+    });
+
+  } catch (error) {
+    console.error('❌ Reset PIN error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred. Please try again later.'
+    });
+  }
+});
+
+// @route   POST /api/auth/recover-pin
+// @desc    Recover PIN using email and security question answer
+// @access  Public
+router.post('/recover-pin', [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('securityAnswer')
+    .notEmpty()
+    .withMessage('Security answer is required')
+    .isLength({ min: 2, max: 100 })
+    .withMessage('Security answer must be between 2 and 100 characters')
+], async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email, securityAnswer } = req.body;
+
+    // Find user by email and include PIN and security answer for verification
+    const user = await User.findByEmail(email).select('+pinCode +securityAnswer securityQuestion');
+    
+    if (!user) {
+      // For security, don't reveal if user exists
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or security answer'
+      });
+    }
+
+    // Check if user has a security question set up
+    if (!user.securityQuestion || !user.securityAnswer) {
+      return res.status(400).json({
+        success: false,
+        message: 'This account does not have a security question set up. Please contact support.'
+      });
+    }
+
+    // Verify security answer
+    const isAnswerValid = await user.compareSecurityAnswer(securityAnswer);
+    
+    if (!isAnswerValid) {
+      console.log('❌ Invalid security answer for PIN recovery:', email);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or security answer'
+      });
+    }
+
+    // Return the security question and a success message (PIN will be sent in a separate step or shown)
+    // For security, we don't return the actual PIN directly - instead we allow them to reset it
+    console.log('✅ Security answer verified for user:', user.email);
+
+    res.status(200).json({
+      success: true,
+      message: 'Security answer verified successfully.',
       data: {
-        email: user.email
+        email: user.email,
+        securityQuestion: user.securityQuestion,
+        // Note: We're returning this token to allow the user to reset their PIN
+        canResetPin: true
       }
     });
 
   } catch (error) {
-    console.error('❌ Verify reset token error:', error);
+    console.error('❌ Recover PIN error:', error);
     res.status(500).json({
       success: false,
-      message: 'An error occurred while verifying the token.'
+      message: 'An error occurred. Please try again later.'
+    });
+  }
+});
+
+// @route   POST /api/auth/recover-pin-reset
+// @desc    Reset PIN after security answer verification
+// @access  Public (but requires prior verification)
+router.post('/recover-pin-reset', [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('securityAnswer')
+    .notEmpty()
+    .withMessage('Security answer is required'),
+  body('newPinCode')
+    .isLength({ min: 4, max: 4 })
+    .withMessage('New PIN code must be exactly 4 digits')
+    .isNumeric()
+    .withMessage('New PIN code must contain only numbers')
+], async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email, securityAnswer, newPinCode } = req.body;
+
+    // Find user by email and include PIN and security answer for verification
+    const user = await User.findByEmail(email).select('+pinCode +securityAnswer');
+    
+    if (!user) {
+      // For security, don't reveal if user exists
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or security answer'
+      });
+    }
+
+    // Verify security answer again for security
+    const isAnswerValid = await user.compareSecurityAnswer(securityAnswer);
+    
+    if (!isAnswerValid) {
+      console.log('❌ Invalid security answer for PIN reset:', email);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or security answer'
+      });
+    }
+
+    // Update PIN
+    user.pinCode = newPinCode; // Will be hashed by pre-save hook
+    await user.save();
+
+    console.log('✅ PIN recovered and reset successfully for user:', user.email);
+
+    res.status(200).json({
+      success: true,
+      message: 'Your PIN has been reset successfully. You can now log in with your new PIN.'
+    });
+
+  } catch (error) {
+    console.error('❌ Recover PIN reset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred. Please try again later.'
     });
   }
 });

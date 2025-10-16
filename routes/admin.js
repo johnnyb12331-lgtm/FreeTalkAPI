@@ -1133,4 +1133,146 @@ router.patch('/users/:userId/status', authenticateToken, requireAdmin, async (re
   }
 });
 
+// @route   GET /api/admin/events
+// @desc    Get all events for moderation
+// @access  Private (Admin only)
+router.get('/events', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, flagged, approved } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const Event = require('../models/Event');
+    const query = {};
+    if (flagged !== undefined) query.isFlagged = flagged === 'true';
+    if (approved !== undefined) query.isApproved = approved === 'true';
+
+    const events = await Event.find(query)
+      .populate('organizer', 'name email avatar')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await Event.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: {
+        events,
+        pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) }
+      }
+    });
+  } catch (error) {
+    console.error('Get admin events error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch events' });
+  }
+});
+
+// @route   PUT /api/admin/events/:id/approve
+// @desc    Approve an event
+// @access  Private (Admin only)
+router.put('/events/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const Event = require('../models/Event');
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+    event.isApproved = true;
+    event.rejectionReason = null;
+    event.isFlagged = false;
+    await event.save();
+
+    // Notify organizer
+    try {
+      await Notification.createNotification({
+        recipient: event.organizer,
+        sender: req.user._id,
+        type: 'moderation_action',
+        message: `Your event "${event.title}" has been approved`
+      });
+    } catch (e) { /* ignore */ }
+
+    res.json({ success: true, data: event });
+  } catch (error) {
+    console.error('Approve event error:', error);
+    res.status(500).json({ success: false, message: 'Failed to approve event' });
+  }
+});
+
+// @route   PUT /api/admin/events/:id/reject
+// @desc    Reject an event
+// @access  Private (Admin only)
+router.put('/events/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const Event = require('../models/Event');
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+    event.isApproved = false;
+    event.rejectionReason = req.body.reason || 'Event does not meet community guidelines';
+    await event.save();
+
+    // Notify organizer
+    try {
+      await Notification.createNotification({
+        recipient: event.organizer,
+        sender: req.user._id,
+        type: 'moderation_action',
+        message: `Your event "${event.title}" was rejected: ${event.rejectionReason}`
+      });
+    } catch (e) { /* ignore */ }
+
+    res.json({ success: true, data: event });
+  } catch (error) {
+    console.error('Reject event error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject event' });
+  }
+});
+
+// @route   DELETE /api/admin/events/:id
+// @desc    Delete an event
+// @access  Private (Admin only)
+router.delete('/events/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const Event = require('../models/Event');
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+    await event.deleteOne();
+
+    // Notify organizer
+    try {
+      await Notification.createNotification({
+        recipient: event.organizer,
+        sender: req.user._id,
+        type: 'moderation_action',
+        message: `Your event "${event.title}" was removed by admin`
+      });
+    } catch (e) { /* ignore */ }
+
+    res.json({ success: true, message: 'Event deleted' });
+  } catch (error) {
+    console.error('Delete event error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete event' });
+  }
+});
+
+// @route   PUT /api/admin/events/:id/flag
+// @desc    Flag an event for review
+// @access  Private (Admin only)
+router.put('/events/:id/flag', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const Event = require('../models/Event');
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+    event.isFlagged = true;
+    await event.save();
+
+    res.json({ success: true, data: event });
+  } catch (error) {
+    console.error('Flag event error:', error);
+    res.status(500).json({ success: false, message: 'Failed to flag event' });
+  }
+});
+
 module.exports = router;

@@ -25,7 +25,7 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Check if user is banned
+    // Check if user is banned (banned users cannot login at all)
     if (user.isBanned) {
       return res.status(403).json({
         success: false,
@@ -34,15 +34,9 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Check if user is suspended
-    if (user.isSuspended) {
-      return res.status(403).json({
-        success: false,
-        message: 'Your account has been temporarily suspended. Please contact support.',
-        isSuspended: true,
-        suspensionReason: user.suspensionReason
-      });
-    }
+    // Note: Suspended users CAN login and authenticate
+    // They just can't perform certain actions (create/like/comment)
+    // Those actions are blocked by the checkSuspension middleware
 
     // Add user to request object
     req.user = user;

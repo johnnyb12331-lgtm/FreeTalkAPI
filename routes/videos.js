@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const { authenticateToken } = require('../middleware/auth');
 const { optionalAuth } = require('../middleware/optionalAuth');
+const checkSuspension = require('../middleware/checkSuspension');
 const upload = require('../config/multer');
 
 const router = express.Router();
@@ -48,15 +49,20 @@ router.get('/', optionalAuth, async (req, res) => {
     // Get blocked user relationships (if user is authenticated)
     let blockedUserIds = [];
     if (req.user && req.user._id) {
-      const Block = require('../models/Block');
-      console.log('📹 Fetching blocked users...');
-      blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
-      console.log(`📹 Found ${blockedUserIds.length} blocked users`);
+      try {
+        const Block = require('../models/Block');
+        console.log('📹 Fetching blocked users...');
+        blockedUserIds = await Block.getAllBlockRelationships(req.user._id);
+        console.log(`📹 Found ${blockedUserIds.length} blocked users`);
+      } catch (blockError) {
+        console.error('⚠️ Error fetching blocked users:', blockError.message);
+        // Continue without blocking - don't fail the whole request
+      }
     }
 
     console.log('📹 Fetching video feed...');
     const result = await Video.getFeed({
-      userId: req.user._id,
+      userId: req.user?._id,
       page: parseInt(page),
       limit: parseInt(limit),
       excludeBlockedUsers: blockedUserIds
@@ -65,18 +71,27 @@ router.get('/', optionalAuth, async (req, res) => {
     console.log(`📹 Retrieved ${result.videos.length} videos from database`);
 
     // Format videos with additional metadata
-    const formattedVideos = result.videos.map(video => ({
-      ...video,
-      isLiked: req.user ? (video.likes?.some(like => like.user && like.user.toString() === req.user._id.toString()) || false) : false,
-      isViewed: req.user ? (video.views?.some(view => view.user && view.user.toString() === req.user._id.toString()) || false) : false,
-      likeCount: video.likes?.length || 0,
-      viewCount: video.views?.length || 0,
-      commentCount: video.comments?.length || 0,
-      // Remove full arrays to reduce payload size
-      likes: undefined,
-      views: undefined,
-      comments: undefined
-    }));
+    const formattedVideos = result.videos.map(video => {
+      try {
+        return {
+          ...video,
+          // Ensure author exists (handle null/undefined)
+          author: video.author || { name: 'Unknown', email: '', avatar: null },
+          isLiked: req.user ? (video.likes?.some(like => like.user && like.user.toString() === req.user._id.toString()) || false) : false,
+          isViewed: req.user ? (video.views?.some(view => view.user && view.user.toString() === req.user._id.toString()) || false) : false,
+          likeCount: video.likes?.length || 0,
+          viewCount: video.views?.length || 0,
+          commentCount: video.comments?.length || 0,
+          // Remove full arrays to reduce payload size
+          likes: undefined,
+          views: undefined,
+          comments: undefined
+        };
+      } catch (formatError) {
+        console.error('⚠️ Error formatting video:', video._id, formatError.message);
+        return null;
+      }
+    }).filter(video => video !== null); // Remove any videos that failed to format
 
     console.log(`✅ Successfully formatted ${formattedVideos.length} videos for feed`);
 
@@ -97,7 +112,7 @@ router.get('/', optionalAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve videos',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : 'An error occurred while fetching videos'
     });
   }
 });
@@ -398,7 +413,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 // @route   POST /api/videos
 // @desc    Upload a new video
 // @access  Private
-router.post('/', authenticateToken, upload.single('video'), createVideoValidation, async (req, res) => {
+router.post('/', authenticateToken, checkSuspension, upload.single('video'), createVideoValidation, async (req, res) => {
   try {
     // Check if user is authenticated
     if (!req.user || !req.user._id) {
@@ -694,7 +709,7 @@ router.post('/:id/view', optionalAuth, async (req, res) => {
 // @route   POST /api/videos/:id/like
 // @desc    Like or unlike a video
 // @access  Private
-router.post('/:id/like', authenticateToken, async (req, res) => {
+router.post('/:id/like', authenticateToken, checkSuspension, async (req, res) => {
   try {
     const video = await Video.findById(req.params.id).populate('author', 'name email avatar');
 
@@ -794,7 +809,7 @@ router.post('/:id/like', authenticateToken, async (req, res) => {
 // @route   POST /api/videos/:id/comment
 // @desc    Add a comment to a video
 // @access  Private
-router.post('/:id/comment', authenticateToken, commentValidation, async (req, res) => {
+router.post('/:id/comment', authenticateToken, checkSuspension, commentValidation, async (req, res) => {
   try {
     // Check for validation errors
     const errors = validationResult(req);

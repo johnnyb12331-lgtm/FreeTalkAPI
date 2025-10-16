@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const Post = require('../models/Post');
 const Notification = require('../models/Notification');
 const { authenticateToken } = require('../middleware/auth');
+const checkSuspension = require('../middleware/checkSuspension');
 const upload = require('../config/multer');
 const { 
   createContentLimiter, 
@@ -580,7 +581,7 @@ router.get('/:id', async (req, res) => {
 // @route   POST /api/posts
 // @desc    Create a new post with text, images, and/or videos
 // @access  Private
-router.post('/', createContentLimiter, upload.array('media', 10), async (req, res) => {
+router.post('/', checkSuspension, createContentLimiter, upload.array('media', 10), async (req, res) => {
   try {
     console.log('📝 Creating post with body:', req.body);
     console.log('📝 Files received:', req.files?.length || 0);
@@ -1010,7 +1011,7 @@ router.put('/:id', [
 // @route   POST /api/posts/:id/share
 // @desc    Share a post to feed or to followers via message
 // @access  Private
-router.post('/:id/share', async (req, res) => {
+router.post('/:id/share', checkSuspension, async (req, res) => {
   try {
     const { shareType, recipients, message } = req.body;
     // shareType: 'feed' or 'message'
@@ -1595,7 +1596,7 @@ router.post('/:id/report', [
 // @route   POST /api/posts/:id/react
 // @desc    Add or update reaction to a post
 // @access  Private
-router.post('/:id/react', [
+router.post('/:id/react', checkSuspension, [
   body('reactionType')
     .isIn(['like', 'celebrate', 'insightful', 'funny', 'mindblown', 'support'])
     .withMessage('Invalid reaction type')
@@ -1781,7 +1782,7 @@ router.get('/:id/reactions', async (req, res) => {
 // @route   POST /api/posts/:id/like (Legacy support)
 // @desc    Like a post (converts to 'like' reaction)
 // @access  Private
-router.post('/:id/like', async (req, res) => {
+router.post('/:id/like', checkSuspension, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
 
@@ -1847,7 +1848,7 @@ router.delete('/:id/like', async (req, res) => {
 // @route   POST /api/posts/:id/comments
 // @desc    Add a comment to a post
 // @access  Private
-router.post('/:id/comments', commentValidation, async (req, res) => {
+router.post('/:id/comments', checkSuspension, commentValidation, async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -2086,7 +2087,7 @@ router.post('/:id/comments', commentValidation, async (req, res) => {
 // @route   POST /api/posts/:id/comments/:commentId/reply
 // @desc    Add reply to a comment
 // @access  Private
-router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res) => {
+router.post('/:id/comments/:commentId/reply', checkSuspension, commentValidation, async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -2354,7 +2355,7 @@ router.post('/:id/comments/:commentId/reply', commentValidation, async (req, res
 // @route   POST /api/posts/:id/comments/:commentId/react
 // @desc    Add or update reaction to a comment
 // @access  Private
-router.post('/:id/comments/:commentId/react', async (req, res) => {
+router.post('/:id/comments/:commentId/react', checkSuspension, async (req, res) => {
   try {
     const { reactionType } = req.body;
     
@@ -2565,7 +2566,7 @@ router.delete('/:id/comments/:commentId/react', async (req, res) => {
 // @route   POST /api/posts/:id/comments/:commentId/replies/:replyId/react
 // @desc    Add or update reaction to a reply
 // @access  Private
-router.post('/:id/comments/:commentId/replies/:replyId/react', async (req, res) => {
+router.post('/:id/comments/:commentId/replies/:replyId/react', checkSuspension, async (req, res) => {
   try {
     const { reactionType } = req.body;
     
@@ -2781,7 +2782,7 @@ router.delete('/:id/comments/:commentId/replies/:replyId/react', async (req, res
 // @route   POST /api/posts/:id/comments/:commentId/replies/:replyId/reply
 // @desc    Add nested reply to a reply
 // @access  Private
-router.post('/:id/comments/:commentId/replies/:replyId/reply', commentValidation, async (req, res) => {
+router.post('/:id/comments/:commentId/replies/:replyId/reply', checkSuspension, commentValidation, async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

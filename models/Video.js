@@ -183,44 +183,83 @@ videoSchema.methods.isViewedByUser = function(userId) {
 
 // Static method to get videos feed
 videoSchema.statics.getFeed = async function(options = {}) {
-  const {
-    userId,
-    page = 1,
-    limit = 10,
-    excludeBlockedUsers = []
-  } = options;
+  try {
+    const {
+      userId,
+      page = 1,
+      limit = 10,
+      excludeBlockedUsers = []
+    } = options;
 
-  const skip = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-  const query = {
-    visibility: 'public',
-    isDeleted: false
-  };
+    const query = {
+      visibility: 'public',
+      isDeleted: false
+    };
 
-  // Exclude blocked users
-  if (excludeBlockedUsers.length > 0) {
-    query.author = { $nin: excludeBlockedUsers };
-  }
-
-  const videos = await this.find(query)
-    .populate('author', 'name email avatar')
-    .populate('taggedUsers', 'name email avatar')
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .skip(skip)
-    .lean();
-
-  const total = await this.countDocuments(query);
-
-  return {
-    videos,
-    pagination: {
-      page,
-      limit,
-      total,
-      pages: Math.ceil(total / limit)
+    // Exclude blocked users
+    if (excludeBlockedUsers.length > 0) {
+      query.author = { $nin: excludeBlockedUsers };
     }
-  };
+
+    // First check if there are any videos
+    const total = await this.countDocuments(query);
+    
+    if (total === 0) {
+      return {
+        videos: [],
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          pages: 0
+        }
+      };
+    }
+
+    const videos = await this.find(query)
+      .populate({
+        path: 'author',
+        select: 'name email avatar',
+        options: { strictPopulate: false }
+      })
+      .populate({
+        path: 'taggedUsers',
+        select: 'name email avatar',
+        options: { strictPopulate: false }
+      })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip(skip)
+      .lean()
+      .catch(err => {
+        console.error('❌ Error in Video.getFeed query:', err);
+        throw err;
+      });
+
+    // Filter out videos with missing authors
+    const validVideos = videos.filter(video => {
+      if (!video.author) {
+        console.warn(`⚠️ Video ${video._id} has no author, skipping`);
+        return false;
+      }
+      return true;
+    });
+
+    return {
+      videos: validVideos,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    };
+  } catch (error) {
+    console.error('❌ Error in Video.getFeed:', error);
+    throw error;
+  }
 };
 
 // Static method to get user's videos

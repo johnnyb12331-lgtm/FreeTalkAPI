@@ -4,7 +4,7 @@ const reportSchema = new mongoose.Schema({
   // What's being reported
   reportType: {
     type: String,
-    enum: ['user', 'post', 'video'],
+    enum: ['user', 'post', 'video', 'club'],
     required: true
   },
   
@@ -37,6 +37,14 @@ const reportSchema = new mongoose.Schema({
     ref: 'Video',
     required: function() {
       return this.reportType === 'video';
+    }
+  },
+  
+  reportedClub: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Club',
+    required: function() {
+      return this.reportType === 'club';
     }
   },
   
@@ -100,6 +108,7 @@ reportSchema.index({ reporter: 1, createdAt: -1 });
 reportSchema.index({ reportedUser: 1, createdAt: -1 });
 reportSchema.index({ reportedPost: 1, createdAt: -1 });
 reportSchema.index({ reportedVideo: 1, createdAt: -1 });
+reportSchema.index({ reportedClub: 1, createdAt: -1 });
 reportSchema.index({ status: 1, createdAt: -1 });
 reportSchema.index({ reportType: 1, status: 1 });
 
@@ -108,6 +117,7 @@ reportSchema.virtual('reportedItem').get(function() {
   if (this.reportType === 'user') return this.reportedUser;
   if (this.reportType === 'post') return this.reportedPost;
   if (this.reportType === 'video') return this.reportedVideo;
+  if (this.reportType === 'club') return this.reportedClub;
   return null;
 });
 

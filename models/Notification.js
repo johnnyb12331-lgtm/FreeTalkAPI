@@ -16,7 +16,7 @@ const notificationSchema = new mongoose.Schema({
   // Type of notification
   type: {
     type: String,
-    enum: ['reaction', 'comment', 'reply', 'post_mention', 'follow', 'message', 'story', 'message_reaction', 'story_reaction', 'post_share', 'tag', 'poke', 'report_update', 'moderation_action', 'video_like', 'video_comment', 'video_tag'],
+    enum: ['reaction', 'comment', 'reply', 'post_mention', 'follow', 'message', 'story', 'message_reaction', 'story_reaction', 'post_share', 'tag', 'poke', 'report_update', 'moderation_action', 'video_like', 'video_comment', 'video_tag', 'event_invite', 'event_rsvp', 'event_checkin', 'birthday_reminder', 'memory_reminder', 'crisis_alert', 'crisis_help_offered', 'crisis_resolved', 'crisis_update', 'safety_check', 'club_join_request', 'club_request_approved', 'club_request_rejected', 'club_invite', 'club_removed', 'club_role_updated', 'club_new_discussion', 'club_new_file', 'club_member_joined', 'club_discussion_tag', 'club_discussion_comment'],
     required: true
   },
   // Related post (if applicable)
@@ -74,6 +74,30 @@ const notificationSchema = new mongoose.Schema({
   relatedReport: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Report'
+  },
+  // Related memory (for memory reminder notifications)
+  relatedMemory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Memory'
+  },
+  // Related crisis response (for crisis notifications)
+  crisisResponse: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CrisisResponse'
+  },
+  // Related club (for club notifications)
+  relatedId: {
+    type: mongoose.Schema.Types.ObjectId
+  },
+  // Related model name (flexible for different notification types)
+  relatedModel: {
+    type: String,
+    enum: ['Post', 'Story', 'Video', 'Conversation', 'Event', 'Memory', 'CrisisResponse', 'Club', 'Poke', 'Report']
+  },
+  // Additional content for notifications
+  content: {
+    type: String,
+    maxlength: 500
   },
   // Read status
   isRead: {

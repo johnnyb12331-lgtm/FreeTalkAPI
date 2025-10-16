@@ -1315,6 +1315,32 @@ router.post('/:id/discussions', checkSuspension, upload.array('media', 10), [
       }
     }
 
+    // Parse tagged members if provided
+    let taggedMembers = [];
+    if (req.body.taggedMembers) {
+      try {
+        taggedMembers = typeof req.body.taggedMembers === 'string'
+          ? JSON.parse(req.body.taggedMembers)
+          : req.body.taggedMembers;
+        
+        // Validate tagged members are club members
+        if (Array.isArray(taggedMembers)) {
+          for (const userId of taggedMembers) {
+            if (!club.isMember(userId)) {
+              return res.status(400).json({ 
+                success: false, 
+                message: `User ${userId} is not a member of this club` 
+              });
+            }
+          }
+        } else {
+          taggedMembers = [];
+        }
+      } catch (e) {
+        return res.status(400).json({ success: false, message: 'Invalid taggedMembers format' });
+      }
+    }
+
     const discussion = club.addDiscussion(
       req.user._id,
       content,
@@ -1323,6 +1349,11 @@ router.post('/:id/discussions', checkSuspension, upload.array('media', 10), [
       pollOptions,
       req.body.pollEndsAt ? new Date(req.body.pollEndsAt) : null
     );
+
+    // Add tagged members to discussion
+    if (taggedMembers.length > 0) {
+      discussion.taggedMembers = taggedMembers;
+    }
 
     await club.save();
 
@@ -1348,15 +1379,44 @@ router.post('/:id/discussions', checkSuspension, upload.array('media', 10), [
         try {
           await Notification.create({
             recipient: member.user,
+            sender: req.user._id,
             type: 'club_post',
             content: `${req.user.name} posted in ${club.name}`,
-            relatedUser: req.user._id,
-            relatedClub: club._id,
-            relatedDiscussion: discussion._id,
+            relatedId: club._id,
+            relatedModel: 'Club',
             actionUrl: `/clubs/${club._id}/discussions/${discussion._id}`
           });
         } catch (notifError) {
           console.error('Error creating notification:', notifError);
+        }
+      }
+    }
+
+    // Send separate notifications for tagged members
+    for (const taggedUserId of taggedMembers) {
+      if (taggedUserId.toString() !== req.user._id.toString()) {
+        // Send socket notification
+        io.to(`user:${taggedUserId.toString()}`).emit('club:discussion-tag', {
+          clubId: club._id.toString(),
+          clubName: club.name,
+          discussionId: discussion._id.toString(),
+          authorName: req.user.name,
+          authorAvatar: req.user.avatar
+        });
+
+        // Create in-app notification for tag (in addition to general post notification)
+        try {
+          await Notification.create({
+            recipient: taggedUserId,
+            sender: req.user._id,
+            type: 'club_discussion_tag',
+            content: `${req.user.name} tagged you in a post in ${club.name}`,
+            relatedId: club._id,
+            relatedModel: 'Club',
+            actionUrl: `/clubs/${club._id}/discussions/${discussion._id}`
+          });
+        } catch (notifError) {
+          console.error('Error creating tag notification:', notifError);
         }
       }
     }
@@ -1505,6 +1565,157 @@ router.delete('/:id/discussions/:discussionId', checkSuspension, [
   } catch (error) {
     console.error('Delete discussion error:', error);
     return res.status(500).json({ success: false, message: 'Failed to delete discussion' });
+  }
+});
+
+// Edit discussion
+router.put('/:id/discussions/:discussionId', checkSuspension, upload.array('media', 10), [
+  param('id').isMongoId(),
+  param('discussionId').isMongoId(),
+  body('content')
+    .optional({ checkFalsy: true })
+    .trim()
+    .isLength({ max: 5000 })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const club = await Club.findById(req.params.id);
+    if (!club) {
+      return res.status(404).json({ success: false, message: 'Club not found' });
+    }
+
+    const discussion = club.discussions.id(req.params.discussionId);
+    if (!discussion || discussion.isDeleted) {
+      return res.status(404).json({ success: false, message: 'Discussion not found' });
+    }
+
+    // Check if user is author or moderator
+    const isAuthor = discussion.author.toString() === req.user._id.toString();
+    const canModerate = club.canModerate(req.user._id);
+
+    if (!isAuthor && !canModerate) {
+      return res.status(403).json({ success: false, message: 'You do not have permission to edit this discussion' });
+    }
+
+    // Prepare updates object
+    const updates = {};
+
+    // Only author can edit content and media
+    if (isAuthor) {
+      // Handle content update
+      if (req.body.content !== undefined) {
+        updates.content = req.body.content.trim();
+      }
+
+      // Handle media update
+      if (req.files && req.files.length > 0) {
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        updates.media = req.files.map(file => ({
+          url: `${baseUrl}/${file.path.replace(/\\/g, '/')}`,
+          type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+          thumbnail: null,
+          width: null,
+          height: null,
+          duration: null
+        }));
+      } else if (req.body.media) {
+        // If media is sent as JSON (for removing media)
+        try {
+          updates.media = typeof req.body.media === 'string' 
+            ? JSON.parse(req.body.media) 
+            : req.body.media;
+        } catch (e) {
+          return res.status(400).json({ success: false, message: 'Invalid media format' });
+        }
+      }
+
+      // Handle tagged members update
+      if (req.body.taggedMembers) {
+        try {
+          const taggedMembers = typeof req.body.taggedMembers === 'string'
+            ? JSON.parse(req.body.taggedMembers)
+            : req.body.taggedMembers;
+          
+          // Validate tagged members are club members
+          if (Array.isArray(taggedMembers)) {
+            for (const userId of taggedMembers) {
+              if (!club.isMember(userId)) {
+                return res.status(400).json({ 
+                  success: false, 
+                  message: `User ${userId} is not a member of this club` 
+                });
+              }
+            }
+            updates.taggedMembers = taggedMembers;
+          }
+        } catch (e) {
+          return res.status(400).json({ success: false, message: 'Invalid taggedMembers format' });
+        }
+      }
+
+      // Validate that either content or media exists after update
+      const finalContent = updates.content !== undefined ? updates.content : discussion.content;
+      const finalMedia = updates.media !== undefined ? updates.media : discussion.media;
+      
+      if (!finalContent && (!finalMedia || finalMedia.length === 0)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Either content or media must be provided' 
+        });
+      }
+    }
+
+    // Update the discussion using the model method
+    const updatedDiscussion = club.updateDiscussion(req.params.discussionId, req.user._id, updates);
+
+    await club.save();
+    await club.populate('discussions.author', 'name avatar isVerified');
+
+    // Notify tagged members (only for new tags)
+    const io = req.app.get('io');
+    if (updates.taggedMembers && isAuthor) {
+      const previouslyTagged = discussion.taggedMembers || [];
+      const newlyTagged = updates.taggedMembers.filter(
+        userId => !previouslyTagged.some(prevId => prevId.toString() === userId.toString())
+      );
+
+      for (const taggedUserId of newlyTagged) {
+        if (taggedUserId.toString() !== req.user._id.toString()) {
+          // Send socket notification
+          io.to(`user:${taggedUserId.toString()}`).emit('club:discussion-tag', {
+            clubId: club._id.toString(),
+            clubName: club.name,
+            discussionId: updatedDiscussion._id.toString(),
+            authorName: req.user.name,
+            authorAvatar: req.user.avatar
+          });
+
+          // Create in-app notification
+          try {
+            await Notification.create({
+              recipient: taggedUserId,
+              sender: req.user._id,
+              type: 'club_discussion_tag',
+              content: `${req.user.name} tagged you in a post in ${club.name}`,
+              relatedId: club._id,
+              relatedModel: 'Club',
+              actionUrl: `/clubs/${club._id}/discussions/${updatedDiscussion._id}`
+            });
+          } catch (notifError) {
+            console.error('Error creating tag notification:', notifError);
+          }
+        }
+      }
+    }
+
+    return res.json({ success: true, data: updatedDiscussion });
+  } catch (error) {
+    console.error('Edit discussion error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to edit discussion' });
   }
 });
 
