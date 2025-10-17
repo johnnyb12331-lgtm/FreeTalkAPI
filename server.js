@@ -761,6 +761,7 @@ app.use('/api/events', require('./routes/events'));
 app.use('/api/memories', require('./routes/memories')); // Memories and On This Day feature
 app.use('/api/crisis', require('./routes/crisis')); // Crisis Response and Safety Checks
 app.use('/api/clubs', require('./routes/clubs')); // Clubs feature
+app.use('/api/achievements', require('./routes/achievements')); // Achievement badges system
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

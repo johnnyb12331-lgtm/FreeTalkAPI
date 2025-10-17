@@ -5,6 +5,7 @@ const checkSuspension = require('../middleware/checkSuspension');
 const { generalLimiter, createContentLimiter, searchLimiter } = require('../middleware/rateLimiter');
 const Club = require('../models/Club');
 const Notification = require('../models/Notification');
+const achievementService = require('../services/achievementService');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -151,6 +152,21 @@ router.post('/', createContentLimiter, checkSuspension, createClubValidation, as
     ]);
 
     console.log('✅ Populated owner and members');
+
+    // Check for achievements - club creation
+    try {
+      const newAchievements = await achievementService.checkAndAwardAchievements(
+        req.user._id,
+        'club_create',
+        { clubId: club._id }
+      );
+      if (newAchievements.length > 0) {
+        console.log('🏆 New achievements unlocked:', newAchievements.map(a => a.achievement.name).join(', '));
+      }
+    } catch (achievementError) {
+      console.error('⚠️  Achievement check failed:', achievementError.message);
+      // Don't fail the request if achievement check fails
+    }
 
     // Emit real-time event
     const io = req.app.get('io');
@@ -651,6 +667,80 @@ router.put('/:id', checkSuspension, param('id').isMongoId(), createClubValidatio
   }
 });
 
+// Upload club image (cover image)
+router.post('/:id/upload-image', checkSuspension, param('id').isMongoId(), upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No image uploaded' });
+    }
+
+    // Validate that it's an image
+    if (!req.file.mimetype.startsWith('image/')) {
+      // Delete the uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ success: false, message: 'File must be an image' });
+    }
+
+    const club = await Club.findById(req.params.id);
+    if (!club) {
+      // Delete the uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ success: false, message: 'Club not found' });
+    }
+
+    // Only owner or admin can upload club image
+    if (!club.canManage(req.user._id)) {
+      // Delete the uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only club owner or admin can upload club image' 
+      });
+    }
+
+    // Delete old cover image if it exists
+    if (club.coverImage) {
+      const oldImagePath = path.join(__dirname, '..', club.coverImage);
+      if (fs.existsSync(oldImagePath)) {
+        try {
+          fs.unlinkSync(oldImagePath);
+        } catch (err) {
+          console.error('Error deleting old club image:', err);
+        }
+      }
+    }
+
+    // Update club with new image
+    club.coverImage = `/uploads/clubs/${req.file.filename}`;
+    await club.save();
+
+    // Emit real-time event to club members
+    const io = req.app.get('io');
+    club.members.forEach(member => {
+      io.to(`user:${member.user.toString()}`).emit('club:updated', {
+        clubId: club._id.toString(),
+        updates: { coverImage: club.coverImage }
+      });
+    });
+
+    return res.json({ 
+      success: true, 
+      message: 'Club image uploaded successfully',
+      data: { coverImage: club.coverImage }
+    });
+  } catch (error) {
+    console.error('Upload club image error:', error);
+    // Clean up uploaded file on error
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to upload club image' 
+    });
+  }
+});
+
 // Delete club
 router.delete('/:id', checkSuspension, param('id').isMongoId(), async (req, res) => {
   try {
@@ -779,12 +869,13 @@ router.post('/:id/join', checkSuspension, param('id').isMongoId(), async (req, r
 
     const io = req.app.get('io');
 
-    // Private clubs require invite code or approval
+    // Private clubs - can join with invite code OR send join request
     if (club.type === 'private') {
-      console.log('🔒 Private club - checking invite code...');
-      const { inviteCode } = req.body;
+      console.log('🔒 Private club - checking invite code or creating join request...');
+      const { inviteCode, message } = req.body;
       console.log('🔑 Provided invite code:', inviteCode ? '***' + inviteCode.slice(-2) : 'none');
       console.log('🔑 Required invite code:', club.inviteCode ? '***' + club.inviteCode.slice(-2) : 'none');
+      console.log('💬 Join request message:', message || '(none)');
       
       if (inviteCode && inviteCode === club.inviteCode) {
         console.log('✅ Valid invite code - adding member directly');
@@ -818,13 +909,55 @@ router.post('/:id/join', checkSuspension, param('id').isMongoId(), async (req, r
           }
         });
       } else {
-        console.error('❌ Invalid or missing invite code for private club');
+        // No valid invite code - allow user to request to join
+        console.log('🔑 No valid invite code - creating join request for private club');
+        
+        // Add join request
+        const requestMessage = message || '';
+        club.addJoinRequest(req.user._id, requestMessage);
+        await club.save();
+
+        console.log('✅ Join request created for private club');
+
+        // Notify club admins and moderators
+        const moderators = club.members.filter(m => 
+          m.role === 'owner' || m.role === 'admin' || m.role === 'moderator'
+        );
+        
+        console.log('📧 Notifying', moderators.length, 'moderator(s)');
+        
+        moderators.forEach(async (mod) => {
+          io.to(`user:${mod.user.toString()}`).emit('club:join-request', {
+            clubId: club._id.toString(),
+            userId: req.user._id.toString(),
+            userName: req.user.name,
+            message: requestMessage,
+            clubType: 'private'
+          });
+
+          // Create notification
+          try {
+            await Notification.create({
+              recipient: mod.user,
+              sender: req.user._id,
+              type: 'club_join_request',
+              content: `${req.user.name} wants to join ${club.name}`,
+              relatedId: club._id,
+              relatedModel: 'Club'
+            });
+          } catch (notifError) {
+            console.error('⚠️  Failed to create notification:', notifError.message);
+          }
+        });
+
+        console.log('✅ Join request sent successfully for private club');
         console.log('========================================\n');
-        return res.status(403).json({ 
-          success: false, 
-          message: 'This club is private. An invite code is required.',
-          clubType: 'private',
-          requiresInviteCode: true
+        return res.json({ 
+          success: true, 
+          message: 'Join request sent to club admins', 
+          requiresApproval: true,
+          clubName: club.name,
+          clubType: 'private'
         });
       }
     }
@@ -889,6 +1022,20 @@ router.post('/:id/join', checkSuspension, param('id').isMongoId(), async (req, r
       await club.save();
 
       console.log('📊 Updated members count:', club.membersCount);
+
+      // Check for achievements - club join
+      try {
+        const newAchievements = await achievementService.checkAndAwardAchievements(
+          req.user._id,
+          'club_join',
+          { clubId: club._id }
+        );
+        if (newAchievements.length > 0) {
+          console.log('🏆 New achievements unlocked:', newAchievements.map(a => a.achievement.name).join(', '));
+        }
+      } catch (achievementError) {
+        console.error('⚠️  Achievement check failed:', achievementError.message);
+      }
 
       // Notify club admins
       const admins = club.members.filter(m => m.role === 'owner' || m.role === 'admin');
@@ -991,6 +1138,94 @@ router.post('/:id/leave', checkSuspension, param('id').isMongoId(), async (req, 
   }
 });
 
+// Accept invite to join club
+router.post('/:id/accept-invite', checkSuspension, param('id').isMongoId(), async (req, res) => {
+  console.log('========================================');
+  console.log('✅ ACCEPT INVITE TO CLUB REQUEST');
+  console.log('========================================');
+  console.log('📅 Timestamp:', new Date().toISOString());
+  console.log('🆔 Club ID:', req.params.id);
+  console.log('👤 User ID:', req.user?._id);
+  
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.error('❌ Validation errors:', errors.array());
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid club ID format'
+      });
+    }
+
+    const club = await Club.findById(req.params.id);
+    if (!club) {
+      console.error('❌ Club not found');
+      return res.status(404).json({ success: false, message: 'Club not found' });
+    }
+
+    console.log('✅ Club found:', club.name);
+
+    // Check if already a member
+    if (club.isMember(req.user._id)) {
+      console.warn('⚠️  User is already a member');
+      return res.status(400).json({ success: false, message: 'You are already a member' });
+    }
+
+    // Check max members limit
+    if (club.maxMembers && club.membersCount >= club.maxMembers) {
+      console.warn('⚠️  Club has reached maximum capacity');
+      return res.status(400).json({
+        success: false,
+        message: 'This club has reached its maximum member capacity'
+      });
+    }
+
+    // Add as member
+    club.addMember(req.user._id);
+    await club.save();
+
+    console.log('📊 Updated members count:', club.membersCount);
+
+    // Notify club admins
+    const io = req.app.get('io');
+    const admins = club.members.filter(m => m.role === 'owner' || m.role === 'admin');
+    console.log('📧 Notifying', admins.length, 'admin(s)');
+    
+    admins.forEach(admin => {
+      io.to(`user:${admin.user.toString()}`).emit('club:member-joined', {
+        clubId: club._id.toString(),
+        userId: req.user._id.toString(),
+        userName: req.user.name
+      });
+    });
+
+    console.log('✅ Successfully accepted invite and joined club');
+    console.log('========================================\n');
+
+    return res.json({ 
+      success: true, 
+      message: 'Successfully joined club', 
+      data: club,
+      memberInfo: {
+        role: 'member',
+        joinedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('========================================');
+    console.error('❌ ACCEPT INVITE ERROR');
+    console.error('========================================');
+    console.error('Error:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('========================================\n');
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to accept invite' 
+    });
+  }
+});
+
 // Approve join request
 router.post('/:id/approve-request/:userId', checkSuspension, [
   param('id').isMongoId(),
@@ -1075,6 +1310,138 @@ router.post('/:id/reject-request/:userId', checkSuspension, [
   }
 });
 
+// Invite user to club
+router.post('/:id/invite/:userId', checkSuspension, [
+  param('id').isMongoId(),
+  param('userId').isMongoId()
+], async (req, res) => {
+  console.log('========================================');
+  console.log('📧 INVITE USER TO CLUB REQUEST');
+  console.log('========================================');
+  console.log('📅 Timestamp:', new Date().toISOString());
+  console.log('🆔 Club ID:', req.params.id);
+  console.log('👤 Inviter ID:', req.user?._id);
+  console.log('👥 Invitee ID:', req.params.userId);
+  
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.error('❌ Validation errors:', errors.array());
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid ID format'
+      });
+    }
+
+    const club = await Club.findById(req.params.id);
+    if (!club) {
+      console.error('❌ Club not found');
+      return res.status(404).json({ success: false, message: 'Club not found' });
+    }
+
+    console.log('✅ Club found:', club.name);
+
+    // Check if inviter is a member and has permission to invite
+    if (!club.isMember(req.user._id)) {
+      console.error('❌ User is not a member of the club');
+      return res.status(403).json({ success: false, message: 'You must be a member to invite others' });
+    }
+
+    // Check if club allows member invites or if user is moderator
+    if (!club.allowMemberInvites && !club.canModerate(req.user._id)) {
+      console.error('❌ Member invites are not allowed');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only moderators can invite members to this club' 
+      });
+    }
+
+    // Check if invitee is already a member
+    if (club.isMember(req.params.userId)) {
+      console.warn('⚠️  User is already a member');
+      return res.status(400).json({ success: false, message: 'User is already a member' });
+    }
+
+    // Check if invitee already has a pending join request
+    const existingRequest = club.joinRequests.find(
+      r => r.user.toString() === req.params.userId.toString() && r.status === 'pending'
+    );
+    if (existingRequest) {
+      console.warn('⚠️  User already has a pending join request - auto-approving');
+      // Auto-approve the existing request instead of sending invite
+      club.approveJoinRequest(req.params.userId, req.user._id);
+      await club.save();
+
+      // Notify the user
+      const io = req.app.get('io');
+      io.to(`user:${req.params.userId}`).emit('club:request-approved', {
+        clubId: club._id.toString(),
+        clubName: club.name
+      });
+
+      await Notification.create({
+        recipient: req.params.userId,
+        sender: req.user._id,
+        type: 'club_request_approved',
+        content: `Your request to join ${club.name} was approved`,
+        relatedId: club._id,
+        relatedModel: 'Club'
+      });
+
+      console.log('✅ Join request auto-approved');
+      return res.json({ success: true, message: 'User added to club' });
+    }
+
+    // Check max members limit
+    if (club.maxMembers && club.membersCount >= club.maxMembers) {
+      console.warn('⚠️  Club has reached maximum capacity');
+      return res.status(400).json({
+        success: false,
+        message: 'This club has reached its maximum member capacity'
+      });
+    }
+
+    // Send invite notification
+    const io = req.app.get('io');
+    io.to(`user:${req.params.userId}`).emit('club:invited', {
+      clubId: club._id.toString(),
+      clubName: club.name,
+      inviterName: req.user.name,
+      inviterId: req.user._id.toString()
+    });
+
+    await Notification.create({
+      recipient: req.params.userId,
+      sender: req.user._id,
+      type: 'club_invite',
+      content: `${req.user.name} invited you to join ${club.name}`,
+      relatedId: club._id,
+      relatedModel: 'Club'
+    });
+
+    console.log('✅ Invite sent successfully');
+    console.log('========================================\n');
+
+    return res.json({ 
+      success: true, 
+      message: 'Invite sent successfully',
+      clubName: club.name 
+    });
+  } catch (error) {
+    console.error('========================================');
+    console.error('❌ INVITE USER ERROR');
+    console.error('========================================');
+    console.error('Error:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('========================================\n');
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to send invite' 
+    });
+  }
+});
+
 // Get pending join requests (for moderators)
 router.get('/:id/join-requests', param('id').isMongoId(), async (req, res) => {
   try {
@@ -1101,12 +1468,104 @@ router.get('/:id/join-requests', param('id').isMongoId(), async (req, res) => {
 
 // ===== MEMBER MANAGEMENT =====
 
+// Get club members
+router.get('/:id/members', param('id').isMongoId(), async (req, res) => {
+  console.log('========================================');
+  console.log('👥 GET CLUB MEMBERS REQUEST');
+  console.log('========================================');
+  console.log('📅 Timestamp:', new Date().toISOString());
+  console.log('🆔 Club ID:', req.params.id);
+  console.log('👤 User ID:', req.user?._id);
+  console.log('👤 User Name:', req.user?.name);
+  
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.error('❌ Get members validation error: Invalid club ID format');
+      console.error('Provided ID:', req.params.id);
+      console.log('========================================\n');
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid club ID format'
+      });
+    }
+
+    console.log('✅ Validation passed, fetching club...');
+    const club = await Club.findById(req.params.id)
+      .populate({
+        path: 'members.user',
+        select: 'name avatar isVerified isOnline lastActive'
+      });
+
+    if (!club) {
+      console.warn('⚠️  Club not found');
+      console.log('========================================\n');
+      return res.status(404).json({ success: false, message: 'Club not found' });
+    }
+
+    console.log(`✅ Club found: ${club.name}`);
+    console.log(`👥 Members count: ${club.members.length}`);
+
+    // Check if user is a member (for private clubs)
+    if (club.type === 'private' && !club.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'You must be a member to view members' });
+    }
+
+    // Format members data with online status
+    const members = club.members.map(member => ({
+      user: {
+        _id: member.user._id,
+        name: member.user.name,
+        avatar: member.user.avatar,
+        isVerified: member.user.isVerified,
+        isOnline: member.user.isOnline,
+        lastActive: member.user.lastActive
+      },
+      role: member.role,
+      joinedAt: member.joinedAt,
+      canPost: member.canPost,
+      canComment: member.canComment,
+      isMuted: member.isMuted,
+      mutedUntil: member.mutedUntil
+    }));
+
+    console.log(`✅ Returning ${members.length} members`);
+    console.log('========================================\n');
+
+    return res.json({ 
+      success: true, 
+      members,
+      total: members.length 
+    });
+  } catch (error) {
+    console.error('========================================');
+    console.error('❌ GET CLUB MEMBERS ERROR');
+    console.error('========================================');
+    console.error('Error:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('========================================\n');
+    return res.status(500).json({ success: false, message: error.message || 'Failed to fetch members' });
+  }
+});
+
 // Remove member
 router.delete('/:id/members/:userId', checkSuspension, [
   param('id').isMongoId(),
   param('userId').isMongoId()
 ], async (req, res) => {
   try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid ID format'
+      });
+    }
+
     const club = await Club.findById(req.params.id);
     if (!club) {
       return res.status(404).json({ success: false, message: 'Club not found' });
@@ -1150,6 +1609,16 @@ router.patch('/:id/members/:userId/role', checkSuspension, [
   body('role').isIn(['admin', 'moderator', 'member'])
 ], async (req, res) => {
   try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid parameters'
+      });
+    }
+
     const club = await Club.findById(req.params.id);
     if (!club) {
       return res.status(404).json({ success: false, message: 'Club not found' });
@@ -1194,6 +1663,16 @@ router.post('/:id/members/:userId/mute', checkSuspension, [
   body('duration').optional().isInt({ min: 1 })
 ], async (req, res) => {
   try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid parameters'
+      });
+    }
+
     const club = await Club.findById(req.params.id);
     if (!club) {
       return res.status(404).json({ success: false, message: 'Club not found' });
@@ -1229,6 +1708,16 @@ router.post('/:id/members/:userId/unmute', checkSuspension, [
   param('userId').isMongoId()
 ], async (req, res) => {
   try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array(),
+        message: 'Invalid ID format'
+      });
+    }
+
     const club = await Club.findById(req.params.id);
     if (!club) {
       return res.status(404).json({ success: false, message: 'Club not found' });
@@ -1357,8 +1846,26 @@ router.post('/:id/discussions', checkSuspension, upload.array('media', 10), [
 
     await club.save();
 
+    // Check for achievements - club post
+    try {
+      const isEarlyPost = club.createdAt && (Date.now() - club.createdAt.getTime()) < (60 * 60 * 1000); // Within 1 hour
+      const newAchievements = await achievementService.checkAndAwardAchievements(
+        req.user._id,
+        'club_post',
+        { clubId: club._id, isEarlyPost }
+      );
+      if (newAchievements.length > 0) {
+        console.log('🏆 New achievements unlocked:', newAchievements.map(a => a.achievement.name).join(', '));
+      }
+    } catch (achievementError) {
+      console.error('⚠️  Achievement check failed:', achievementError.message);
+    }
+
     // Populate author info
     await club.populate('discussions.author', 'name avatar isVerified');
+
+    // Get the populated discussion - find it by ID since the reference isn't updated
+    const populatedDiscussion = club.discussions.id(discussion._id);
 
     // Create notifications for club members
     const io = req.app.get('io');
@@ -1421,7 +1928,7 @@ router.post('/:id/discussions', checkSuspension, upload.array('media', 10), [
       }
     }
 
-    return res.status(201).json({ success: true, data: discussion });
+    return res.status(201).json({ success: true, data: populatedDiscussion });
   } catch (error) {
     console.error('Create discussion error:', error);
     return res.status(500).json({ success: false, message: error.message || 'Failed to create discussion' });
@@ -1509,6 +2016,28 @@ router.post('/:id/discussions/:discussionId/like', checkSuspension, [
       // Like
       discussion.likes.push(req.user._id);
       discussion.likesCount = discussion.likes.length;
+
+      // Check for achievements - like given
+      try {
+        await achievementService.checkAndAwardAchievements(
+          req.user._id,
+          'club_like_given',
+          { clubId: club._id }
+        );
+      } catch (achievementError) {
+        console.error('⚠️  Achievement check failed:', achievementError.message);
+      }
+
+      // Check for achievements - like received (for post author)
+      try {
+        await achievementService.checkAndAwardAchievements(
+          discussion.author.toString(),
+          'club_like_received',
+          { clubId: club._id }
+        );
+      } catch (achievementError) {
+        console.error('⚠️  Achievement check failed:', achievementError.message);
+      }
 
       // Notify author
       if (discussion.author.toString() !== req.user._id.toString()) {
@@ -1835,6 +2364,20 @@ router.post('/:id/discussions/:discussionId/comments', checkSuspension, [
     );
 
     await club.save();
+
+    // Check for achievements - club comment
+    try {
+      const newAchievements = await achievementService.checkAndAwardAchievements(
+        req.user._id,
+        'club_comment',
+        { clubId: club._id, discussionId: req.params.discussionId }
+      );
+      if (newAchievements.length > 0) {
+        console.log('🏆 New achievements unlocked:', newAchievements.map(a => a.achievement.name).join(', '));
+      }
+    } catch (achievementError) {
+      console.error('⚠️  Achievement check failed:', achievementError.message);
+    }
 
     // Populate comment author info
     await club.populate('comments.author', 'name avatar isVerified');

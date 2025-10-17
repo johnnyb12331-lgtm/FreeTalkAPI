@@ -252,6 +252,11 @@ const userSchema = new mongoose.Schema({
     type: Date,
     select: false
   },
+  // Achievement system
+  achievementPoints: {
+    type: Number,
+    default: 0
+  },
   // Premium subscription fields
   isPremium: {
     type: Boolean,
