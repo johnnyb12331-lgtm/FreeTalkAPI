@@ -16,7 +16,8 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: false, // Count successful requests too
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  // Trust the first proxy (nginx) - use X-Forwarded-For header for real IP
+  skip: (req) => !req.ip, // Skip if no IP available
 });
 
 // Moderate rate limiting for content creation (posts, comments, messages)
@@ -29,7 +30,7 @@ const createContentLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Light rate limiting for general API requests
@@ -42,7 +43,7 @@ const generalLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Very strict rate limiting for expensive operations (uploads, reports)
@@ -55,7 +56,7 @@ const strictLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Moderate rate limiting for messaging
@@ -68,7 +69,7 @@ const messageLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Rate limiting for search operations
@@ -81,7 +82,7 @@ const searchLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Rate limiting for reaction operations (likes, etc.)
@@ -94,7 +95,7 @@ const reactionLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Rate limiting for follow/unfollow operations
@@ -107,7 +108,7 @@ const followLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Rate limiting for profile updates
@@ -120,7 +121,7 @@ const profileUpdateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 // Rate limiting for password reset requests
@@ -133,7 +134,7 @@ const passwordResetLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: false, // Disable trust proxy to prevent rate limit bypass
+  skip: (req) => !req.ip,
 });
 
 module.exports = {
